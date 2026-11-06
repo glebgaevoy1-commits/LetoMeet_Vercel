@@ -52,6 +52,39 @@ class Features(unittest.TestCase):
         stream=io.BytesIO();Image.new('RGB',(20,20)).save(stream,'PNG');stream.seek(0)
         r=self.client.post('/api/upload-image',data={'image':(stream,'photo.png')});self.assertEqual(r.status_code,201)
         response=self.client.get(r.json['image_url']); self.assertEqual(response.status_code,200); response.close()
+    def test_photo_persists_without_local_writes(self):
+        uid=self.login()
+        stream=io.BytesIO();Image.new('RGBA',(2500,20),(255,0,0,0)).save(stream,'PNG');stream.seek(0)
+        with patch.object(m.os, 'makedirs', side_effect=OSError('Read-only filesystem')) as mkdir:
+            r=self.client.post('/api/upload-image',data={'image':(stream,'фото.png')})
+            self.assertEqual(r.status_code,201);mkdir.assert_not_called()
+        photo=m.EventImage.query.one();self.assertEqual(photo.user_id,uid)
+        m.db.session.remove()
+        response=m.app.test_client().get(r.json['image_url'])
+        self.assertEqual(response.status_code,200)
+        with Image.open(io.BytesIO(response.data)) as result:
+            self.assertEqual(result.format,'JPEG');self.assertEqual(result.width,2400)
+            self.assertEqual(result.getpixel((0,0)),(255,255,255))
+        response.close()
+    def test_photo_file_and_pixel_limits(self):
+        self.login()
+        r=self.client.post('/api/upload-image',data={'image':(io.BytesIO(b'x'*(4*1024*1024+1)),'large.jpg')})
+        self.assertEqual(r.status_code,413)
+        with patch.object(m.Image, 'open') as opened:
+            source=opened.return_value.__enter__.return_value
+            source.format='JPEG';source.width=5001;source.height=4000
+            r=self.client.post('/api/upload-image',data={'image':(io.BytesIO(b'fake'),'large.jpg')})
+            self.assertEqual(r.status_code,400);source.load.assert_not_called()
+        self.assertEqual(m.EventImage.query.count(),0)
+    def test_photo_database_failure_is_not_invalid_image(self):
+        self.login()
+        stream=io.BytesIO();Image.new('RGB',(20,20)).save(stream,'JPEG');stream.seek(0)
+        with patch.object(m.db.session, 'commit', side_effect=m.SQLAlchemyError('storage unavailable')):
+            with self.assertLogs(m.app.logger,level='ERROR'):
+                r=self.client.post('/api/upload-image',data={'image':(stream,'photo.jpg')})
+        self.assertEqual(r.status_code,503)
+        self.assertEqual(m.EventImage.query.count(),0)
+
     def test_comments_permissions_and_visibility(self):
         eid=self.event(); hidden=self.event('pending')
         self.assertEqual(self.client.post(f'/api/events/{eid}/comments',json={'body':'hello'}).status_code,401)

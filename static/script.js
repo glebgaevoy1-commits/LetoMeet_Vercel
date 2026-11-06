@@ -1465,18 +1465,21 @@ function createPage() {
               Оформление карточки
 
               <div class="card-design-options">
-                <label class="field">
-                  Цвет карточки
-                  <select name="card_color">
-                    <option value="cream" selected>Кремовый</option>
-                    <option value="blue">Голубой</option>
-                    <option value="green">Зелёный</option>
-                    <option value="lavender">Лавандовый</option>
-                    <option value="peach">Персиковый</option>
-                    <option value="pink">Розовый</option>
-                    <option value="dark">Тёмный</option>
-                  </select>
-                </label>
+                <fieldset class="color-picker">
+                  <legend>Цвет карточки</legend>
+                  <div class="color-swatches">
+                    ${[['cream','Кремовый'],['blue','Голубой'],['green','Зелёный'],['lavender','Лавандовый'],['peach','Персиковый'],['pink','Розовый'],['dark','Тёмный']].map(([value,label]) => `
+                      <label class="color-option">
+                        <input type="radio" name="card_color" value="${value}" ${value==='cream'?'checked':''}>
+                        <span class="color-swatch event-card-${value}" aria-hidden="true"></span>
+                        <span>${label}</span>
+                      </label>`).join('')}
+                  </div>
+                  <div id="card-color-preview" class="card-color-preview event-card-cream">
+                    <strong>Так будет выглядеть карточка</strong>
+                    <p class="small">Выбранный цвет: <span id="card-color-name">Кремовый</span></p>
+                  </div>
+                </fieldset>
 
                 <label class="field">
                   Эмодзи
@@ -1529,17 +1532,16 @@ function createPage() {
             ></textarea>
           </label>
 
-          <label class="field full">
-            Обложка мероприятия
-            <input
-              type="file"
-              name="image"
-              accept="image/jpeg,image/png,image/webp"
-            >
-            <span class="muted">
-              JPG, PNG или WEBP. Максимальный размер — 5 МБ.
-            </span>
-          </label>
+          <div class="field full">
+            <label for="event-image">Обложка мероприятия — необязательно</label>
+            <input id="event-image" type="file" name="image" accept="image/jpeg,image/png,image/webp" aria-describedby="image-help image-status">
+            <span id="image-help" class="small muted">JPG, PNG или WEBP · до 4 МБ · до 20 мегапикселей. Любые пропорции; рекомендуем 1600 × 900 пикселей (16:9). HEIC и SVG не поддерживаются. На карточке края могут обрезаться.</span>
+            <div id="image-preview-panel" hidden>
+              <img id="image-preview" class="upload-preview" alt="Предпросмотр обложки">
+              <button type="button" class="secondary" id="remove-image">Убрать фото</button>
+            </div>
+            <span id="image-status" class="small" role="status"></span>
+          </div>
 
         </div>
 
@@ -1646,11 +1648,63 @@ function createPage() {
 
   if (draft) {
     Object.keys(draft).forEach(key => {
-      if (form.elements[key]) {
-        form.elements[key].value = String(draft[key]);
-      }
+      if (key !== 'image' && form.elements[key]) form.elements[key].value = String(draft[key]);
     });
   }
+
+  const colorLabels = {cream:'Кремовый',blue:'Голубой',green:'Зелёный',lavender:'Лавандовый',peach:'Персиковый',pink:'Розовый',dark:'Тёмный'};
+  function updateColorPreview() {
+    const value = form.elements.card_color.value;
+    const preview = form.querySelector('#card-color-preview');
+    preview.className = `card-color-preview event-card-${value}`;
+    form.querySelector('#card-color-name').textContent = colorLabels[value];
+  }
+  form.querySelectorAll('[name="card_color"]').forEach(input => input.addEventListener('change', updateColorPreview));
+  updateColorPreview();
+
+  const imageInput = form.elements.image;
+  const imagePanel = form.querySelector('#image-preview-panel');
+  const imagePreview = form.querySelector('#image-preview');
+  const imageStatus = form.querySelector('#image-status');
+  let photoVersion = 0;
+  let photoInvalid = false;
+  let photoChecking = false;
+  form.querySelector('#remove-image').onclick = () => {
+    photoVersion++; imageInput.value = ''; imagePreview.removeAttribute('src');
+    imagePanel.hidden = true; imageStatus.textContent = ''; photoInvalid = false; photoChecking = false;
+  };
+  imageInput.onchange = async () => {
+    const version = ++photoVersion;
+    imagePreview.removeAttribute('src'); imagePanel.hidden = true;
+    photoInvalid = false; photoChecking = false; imageStatus.textContent = '';
+    const file = imageInput.files[0];
+    if (!file) return;
+    imagePanel.hidden = false; // Keep removal available even for invalid files.
+    if (!/\.(jpe?g|png|webp)$/i.test(file.name)) {
+      imageStatus.textContent = 'Выберите JPG, PNG или WEBP. HEIC и SVG не поддерживаются.'; photoInvalid = true; return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      imageStatus.textContent = 'Файл больше 4 МБ. Уменьшите его или уберите фото.'; photoInvalid = true; return;
+    }
+    photoChecking = true; imageStatus.textContent = 'Проверяем фото…';
+    try {
+      const dataUrl = await new Promise((resolve,reject) => {
+        const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file);
+      });
+      const size = await new Promise((resolve,reject) => {
+        const img = new Image(); img.onload = () => resolve([img.naturalWidth,img.naturalHeight]); img.onerror = reject; img.src = dataUrl;
+      });
+      if (version !== photoVersion) return;
+      if (size[0]*size[1] > 20000000) {
+        photoInvalid = true; imageStatus.textContent = 'Больше 20 мегапикселей. Уменьшите разрешение или уберите фото.'; return;
+      }
+      imagePreview.src = dataUrl;
+      imageStatus.textContent = `${file.name} · ${size[0]} × ${size[1]} · ${(file.size/1024/1024).toFixed(2)} МБ`;
+    } catch(e) {
+      if (version !== photoVersion) return;
+      photoInvalid = true; imageStatus.textContent = 'Не удалось прочитать фото. Выберите другой файл или уберите его.';
+    } finally { if (version === photoVersion) photoChecking = false; }
+  };
 
   form.oninput = () => {
     const formData = new FormData(form);
@@ -1669,9 +1723,13 @@ function createPage() {
 
     const error = document.querySelector('#form-error');
 
+    if (photoChecking || photoInvalid) {
+      error.textContent = photoChecking ? 'Дождитесь проверки фото.' : 'Исправьте ошибку фото или нажмите «Убрать фото».';
+      return;
+    }
     // Проверка размера изображения
-    if (imageFile && imageFile.size > 5 * 1024 * 1024) {
-      error.textContent = 'Изображение должно быть не больше 5 МБ.';
+    if (imageFile && imageFile.size > 4 * 1024 * 1024) {
+      error.textContent = 'Изображение должно быть не больше 4 МБ.';
       return;
     }
 
@@ -1931,7 +1989,15 @@ async function mapPage() {
   content.innerHTML = `<a class="back" href="#catalog">← В каталог</a><h1>Карта событий</h1>
     <p class="muted">Выберите этаж и событие. Точки указаны по номеру кабинета из школьного навигатора.</p>
     <label class="field">Этаж<select id="map-floor">${[0,1,2,3].map(n => `<option value="${n}" ${n===2?'selected':''}>${n}</option>`).join('')}</select></label>
-    <div class="map-layout"><div class="map-scroll"><div class="school-map"><img alt="План этажа школы"/><div class="map-pins"></div></div></div><div id="map-events"></div></div><p id="map-message" role="status"></p>`;
+    <div class="map-zoom-controls" role="group" aria-label="Масштаб карты">
+      <button type="button" class="secondary" id="map-zoom-out" aria-label="Уменьшить карту">−</button>
+      <label for="map-zoom">Масштаб</label><input id="map-zoom" type="range" min="50" max="300" step="25" value="100">
+      <output id="map-zoom-label" for="map-zoom">100%</output>
+      <button type="button" class="secondary" id="map-zoom-in" aria-label="Увеличить карту">+</button>
+      <button type="button" class="secondary" id="map-zoom-reset">По ширине</button>
+    </div>
+    <p class="small muted">Увеличьте карту и прокручивайте её по горизонтали и вертикали.</p>
+    <div class="map-layout"><div class="map-scroll" tabindex="0" role="region" aria-label="План школы, прокручиваемая область"><div class="school-map"><img alt="План этажа школы"/><div class="map-pins"></div></div></div><div id="map-events"></div></div><p id="map-message" role="status"></p>`;
   try {
     const [roomResponse, eventResponse] = await Promise.all([fetch('/static/maps/rooms.json'), fetch('/api/events')]);
     if (!roomResponse.ok || !eventResponse.ok) throw new Error('Не удалось загрузить карту');
@@ -1941,9 +2007,27 @@ async function mapPage() {
     const image = content.querySelector('.school-map img');
     const pins = content.querySelector('.map-pins');
     const select = content.querySelector('#map-floor');
+    const zoom = content.querySelector('#map-zoom');
+    const mapCanvas = content.querySelector('.school-map');
+    const scroll = content.querySelector('.map-scroll');
+    function applyZoom(value) {
+      const next = Math.max(50, Math.min(300, value));
+      const centerX = (scroll.scrollLeft + scroll.clientWidth/2) / mapCanvas.offsetWidth;
+      const centerY = (scroll.scrollTop + scroll.clientHeight/2) / (mapCanvas.offsetHeight || 1);
+      zoom.value = next;
+      mapCanvas.style.width = `${next}%`;
+      content.querySelector('#map-zoom-label').textContent = `${next}%`;
+      content.querySelector('#map-zoom-out').disabled = next === 50;
+      content.querySelector('#map-zoom-in').disabled = next === 300;
+      scroll.scrollLeft = centerX * mapCanvas.offsetWidth - scroll.clientWidth/2;
+      scroll.scrollTop = centerY * mapCanvas.offsetHeight - scroll.clientHeight/2;
+    }
+    zoom.oninput = () => applyZoom(Number(zoom.value));
+    content.querySelector('#map-zoom-in').onclick = () => applyZoom(Number(zoom.value)+25);
+    content.querySelector('#map-zoom-out').onclick = () => applyZoom(Number(zoom.value)-25);
+    content.querySelector('#map-zoom-reset').onclick = () => { applyZoom(100); scroll.scrollTop = 0; scroll.scrollLeft = 0; };
     function draw() {
       const floor = Number(select.value);
-      image.src = `/static/maps/floor_${floor}.png`;
       const visible = mapEvents.filter(e => findRoom(e)?.floor === floor);
       image.onload = () => {
         pins.innerHTML = visible.map((e,i) => {
@@ -1952,6 +2036,8 @@ async function mapPage() {
         }).join('');
       };
       pins.innerHTML = '';
+      image.src = `/static/maps/floor_${floor}.png`;
+      image.onerror = () => { content.querySelector('#map-message').textContent = 'Не удалось загрузить план этажа.'; };
       const unplaced = mapEvents.filter(e => !findRoom(e));
       const link = e => `<p><a href="#event/${e.id}">${escapeHtml(e.title)}</a><br><small>${escapeHtml(e.room)} · ${escapeHtml(e.date)} ${escapeHtml(e.time)}</small></p>`;
       content.querySelector('#map-events').innerHTML = `<h2>На этаже</h2>${visible.length ? visible.map((e,i)=>`<div>${i+1}. ${link(e)}</div>`).join('') : '<p>Нет событий на этом этаже.</p>'}<h2>Без точки на карте</h2>${unplaced.length ? unplaced.map(link).join('') : '<p>Все события размещены.</p>'}`;

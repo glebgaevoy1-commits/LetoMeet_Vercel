@@ -9,11 +9,13 @@ import os
 import uuid
 import re
 from PIL import Image, UnidentifiedImageError
-from flask import send_from_directory
-from werkzeug.utils import secure_filename
+from flask import send_from_directory, send_file
+from sqlalchemy.exc import SQLAlchemyError
+import io
+from PIL import ImageOps
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = int(4.25 * 1024 * 1024)
 
 app.config["SECRET_KEY"] = os.environ.get(
     "SECRET_KEY",
@@ -249,6 +251,12 @@ class SecurityCounter(db.Model):
     key = db.Column(db.String(240), primary_key=True)
     count = db.Column(db.Integer, default=0)
     reset = db.Column(db.DateTime, nullable=False)
+
+class EventImage(db.Model):
+    id = db.Column(db.String(32), primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    data = db.Column(db.LargeBinary, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Comment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -520,10 +528,18 @@ def protect_requests():
 
 @app.errorhandler(413)
 def upload_too_large(error):
-    return jsonify(error="Размер запроса не должен превышать 5 МБ"), 413
+    return jsonify(error="Фото должно быть не больше 4 МБ. Попробуйте уменьшить файл."), 413
 
 @app.get("/media/<filename>")
 def media(filename):
+    if re.fullmatch(r"[a-f0-9]{32}\.jpg", filename):
+        stored = db.session.get(EventImage, filename[:-4])
+        if stored:
+            response = send_file(io.BytesIO(stored.data), mimetype="image/jpeg", download_name=filename,
+                                 max_age=86400, etag=stored.id, conditional=True)
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+    # Keep pre-update local photo URLs working on persistent servers.
     return send_from_directory(UPLOAD_FOLDER, filename)
 
 @app.route("/api/events/<int:event_id>/comments", methods=["GET", "POST"])
@@ -721,8 +737,9 @@ def api_upload_image():
     if not image.filename:
         return jsonify({"error": "Изображение не выбрано"}), 400
 
-    filename = secure_filename(image.filename)
-    extension = os.path.splitext(filename)[1].lower()
+    # Only inspect the extension: storage always uses a generated UUID.
+    # Sanitizing a Cyrillic-only basename can accidentally remove its dot.
+    extension = os.path.splitext(image.filename)[1].lower()
 
     allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -731,21 +748,34 @@ def api_upload_image():
             "error": "Поддерживаются только JPG, PNG и WEBP"
         }), 400
 
+    raw = image.read(4 * 1024 * 1024 + 1)
+    if len(raw) > 4 * 1024 * 1024:
+        return jsonify(error="Фото должно быть не больше 4 МБ."), 413
     try:
-        with Image.open(image.stream) as source:
+        with Image.open(io.BytesIO(raw)) as source:
             if source.format not in {"JPEG", "PNG", "WEBP"}:
-                raise ValueError()
+                return jsonify(error="Выберите настоящее изображение JPG, PNG или WEBP. HEIC и SVG не поддерживаются."), 400
             if source.width * source.height > 20000000:
-                raise ValueError()
+                return jsonify(error="Фото слишком большое: максимум 20 мегапикселей. Уменьшите разрешение."), 400
             source.load()
+            source = ImageOps.exif_transpose(source)
             source.thumbnail((2400, 2400))
-            clean = source.convert("RGB")
-            os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-            new_filename = f"{uuid.uuid4().hex}.jpg"
-            clean.save(os.path.join(UPLOAD_FOLDER, new_filename), "JPEG", quality=88)
+            rgba = source.convert("RGBA")
+            clean = Image.new("RGB", rgba.size, "white")
+            clean.paste(rgba, mask=rgba.getchannel("A"))
+            encoded = io.BytesIO()
+            clean.save(encoded, "JPEG", quality=88)
     except (UnidentifiedImageError, ValueError, OSError, Image.DecompressionBombError):
-        return jsonify({"error": "Некорректное изображение"}), 400
-    image_url = f"/media/{new_filename}"
+        return jsonify(error="Не удалось прочитать фото. Сохраните его как JPG, PNG или WEBP и выберите снова."), 400
+    photo_id = uuid.uuid4().hex
+    try:
+        db.session.add(EventImage(id=photo_id, user_id=session["user_id"], data=encoded.getvalue()))
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        app.logger.exception("Could not save event photo")
+        return jsonify(error="Не удалось сохранить фото. Попробуйте позже или создайте событие без фото."), 503
+    image_url = f"/media/{photo_id}.jpg"
 
     return jsonify({
         "image_url": image_url
