@@ -1264,12 +1264,22 @@ async function eventPage(event, preview = false) {
     return;
   }
 
+  const published = event.status === "approved";
   content.innerHTML = `
     <a class="back" href="${preview ? '#create' : '#catalog'}">
       ← ${preview ? 'Вернуться к форме' : 'В каталог'}
     </a>
 
     ${preview ? '<p class="notice">Предпросмотр заявки. Она ещё не отправлена и не опубликована.</p>' : ''}
+    ${!preview && !published ? `<section class="notice" role="status">
+      <h2>${event.status === 'rejected' ? 'Заявка отклонена' : 'Событие сохранено — ожидает одобрения'}</h2>
+      <p>Пока событие не опубликовано, оно не отображается в каталоге и на карте. Запись и комментарии станут доступны после одобрения администратором.</p>
+      ${event.moderation_comment ? `<p>Комментарий администратора: ${escapeHtml(event.moderation_comment)}</p>` : ''}
+      <a href="#account">Мои события</a>
+      ${currentUser?.role === 'admin' ? ' · <a href="#admin">Открыть модерацию</a>' : ''}
+      <button type="button" class="secondary" id="refresh-event-status">Обновить статус</button>
+    </section>` : ''}
+
 
     <article class="detail">
   ${
@@ -1295,7 +1305,7 @@ async function eventPage(event, preview = false) {
           <p class="description">${escapeHtml(event.description)}</p>
 
           ${
-            preview
+            (preview || !published)
               ? ''
               : `<div class="join-line">
                 <button id="join" class="primary">
@@ -1324,7 +1334,10 @@ async function eventPage(event, preview = false) {
       </div>
     </article>`;
 
-    if (!preview) {
+    if (!preview && !published) {
+      document.querySelector('#refresh-event-status').onclick = render;
+    }
+    if (!preview && published) {
       await commentsPanel(event.id);
       const joinButton = document.querySelector('#join');
       const leaveButton = document.querySelector('#leave');
@@ -1856,6 +1869,10 @@ async function render() {
     filtersPage();
 
   } else if (route === 'catalog') {
+    try { await loadData(); } catch (error) {
+      content.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+      return;
+    }
     catalogPage();
 
   } else if (route === 'map') {
@@ -1873,16 +1890,18 @@ async function render() {
   } else if (route.startsWith('event/')) {
     const id = Number(route.split('/')[1]);
 
-    let event = events.find(item => item.id === id);
-
-    if (!event) {
-      try {
-        const response = await fetch(`/api/events/${id}`);
-
-        if (response.ok) {
-          event = await response.json();
-        }
-      } catch {}
+    let event;
+    try {
+      const response = await fetch(`/api/events/${id}`, {cache:'no-store'});
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        content.innerHTML = `<p class="error" role="alert">${escapeHtml(result.error || 'Не удалось открыть событие. Проверьте вход в аккаунт и попробуйте снова.')}</p><a href="#account">Мои события</a>`;
+        return;
+      }
+      event = await response.json();
+    } catch {
+      content.innerHTML = '<p class="error" role="alert">Не удалось загрузить событие. Проверьте соединение и обновите страницу.</p>';
+      return;
     }
 
     await eventPage(event);
