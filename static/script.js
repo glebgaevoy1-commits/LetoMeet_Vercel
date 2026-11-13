@@ -33,7 +33,7 @@ async function loadData() {
 
 
 function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, char => ({
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
     '&': '&amp;',
     '<': '&lt;',
     '>': '&gt;',
@@ -743,6 +743,7 @@ async function moderateEvent(eventId, action, comment = "") {
         return;
     }
 
+    await loadData();
     await adminPage();
 }
 
@@ -873,6 +874,14 @@ async function accountPage() {
             <p class="muted">
               Участников: ${event.count}
             </p>
+
+            <p class="meta">
+              Статус: <strong>${({pending:'На модерации',approved:'Опубликовано',rejected:'Отклонено'})[event.status] || escapeHtml(event.status)}</strong>
+            </p>
+
+            ${event.status === 'rejected' && event.moderation_comment
+              ? `<p class="error">Причина отклонения: ${escapeHtml(event.moderation_comment)}</p>`
+              : ''}
           </div>
 
           <div class="account-event-actions">
@@ -882,6 +891,9 @@ async function accountPage() {
             >
               Открыть
             </a>
+            ${event.status === 'rejected'
+              ? `<a class="secondary" href="#edit/${event.id}">Исправить и отправить повторно</a>`
+              : ''}
           </div>
 
         </article>
@@ -1135,6 +1147,7 @@ function updateList() {
                     </div>
 
                     <div class="chips">${tags(event)}</div>
+                    <div class="catalog-map" data-event-map="${event.id}"></div>
 
                     <div class="meta">
                       <span>Организатор: ${escapeHtml(event.organizer)}</span>
@@ -1154,6 +1167,15 @@ function updateList() {
         `
     }`;
 
+  const mapSlots = Array.from(results.querySelectorAll('[data-event-map]'));
+  loadRooms().then(rooms => {
+    mapSlots.forEach(slot => {
+      if (!slot.isConnected) return;
+      const event = list.find(e => e.id === Number(slot.dataset.eventMap));
+      const room = findSchoolRoom(rooms, event?.room);
+      if (room) slot.innerHTML = roomMapMarkup(room, true);
+    });
+  }).catch(() => {});
   const reset = document.querySelector('#empty-reset');
   if (reset) reset.onclick = clearFilters;
 }
@@ -1191,7 +1213,12 @@ function catalogPage() {
 }
 
 
+function safeContact(value) {
+  try { const url = new URL(value); return ['https:','http:'].includes(url.protocol) ? value : ''; }
+  catch { return ''; }
+}
 function contactLinks(event) {
+  event = {...event, chat:safeContact(event.chat), contact:safeContact(event.contact)};
   return `
     ${
       event.chat
@@ -1206,6 +1233,7 @@ function contactLinks(event) {
 }
 
 async function joinEvent(eventId) {
+  try {
   const response = await fetch(`/api/events/${eventId}/join`, {
     method: 'POST'
   });
@@ -1218,9 +1246,11 @@ async function joinEvent(eventId) {
   }
 
   return true;
+  } catch { alert('Не удалось связаться с сервером. Попробуйте ещё раз.'); return false; }
 }
 
 async function leaveEvent(eventId) {
+  try {
   const response = await fetch(`/api/events/${eventId}/join`, {
     method: 'DELETE'
   });
@@ -1233,6 +1263,7 @@ async function leaveEvent(eventId) {
   }
 
   return true;
+  } catch { alert('Не удалось связаться с сервером. Попробуйте ещё раз.'); return false; }
 }
 
 async function getMyRegistrations() {
@@ -1276,6 +1307,9 @@ async function eventPage(event, preview = false) {
       <p>Пока событие не опубликовано, оно не отображается в каталоге и на карте. Запись и комментарии станут доступны после одобрения администратором.</p>
       ${event.moderation_comment ? `<p>Комментарий администратора: ${escapeHtml(event.moderation_comment)}</p>` : ''}
       <a href="#account">Мои события</a>
+      ${event.status === 'rejected' && currentUser && event.creator_id === currentUser.id
+        ? ` · <a href="#edit/${event.id}">Исправить мероприятие</a>`
+        : ''}
       ${currentUser?.role === 'admin' ? ' · <a href="#admin">Открыть модерацию</a>' : ''}
       <button type="button" class="secondary" id="refresh-event-status">Обновить статус</button>
     </section>` : ''}
@@ -1332,13 +1366,17 @@ async function eventPage(event, preview = false) {
           ${contactLinks(event)}
         </aside>
       </div>
+      <section class="event-location-card" id="event-location-card"><h2>Место на карте</h2><p class="muted">Загружаем план…</p></section>
     </article>`;
 
+    const detail = document.querySelector('.detail');
+    eventLocationCard(event, detail.querySelector('#event-location-card'));
     if (!preview && !published) {
       document.querySelector('#refresh-event-status').onclick = render;
     }
     if (!preview && published) {
       await commentsPanel(event.id);
+      if (!detail.isConnected) return;
       const joinButton = document.querySelector('#join');
       const leaveButton = document.querySelector('#leave');
 
@@ -1352,7 +1390,10 @@ async function eventPage(event, preview = false) {
         return;
       }
 
-      const registrations = await getMyRegistrations();
+      let registrations;
+      try { registrations = await getMyRegistrations(); }
+      catch { joinButton.disabled = true; joinButton.textContent = 'Обновите страницу, чтобы проверить запись'; return; }
+      if (!detail.isConnected) return;
 
       let isJoined = registrations.some(
         registeredEvent => registeredEvent.id === event.id
@@ -1431,7 +1472,7 @@ function selectField(key, label, options) {
 
 
 
-function createPage() {
+function createPage(editEvent = null) {
   if (!currentUser) {
     content.innerHTML = `
       <section class="empty">
@@ -1459,7 +1500,8 @@ function createPage() {
   content.innerHTML = `
     <section class="event-form">
       <a class="back" href="#home">← На главную</a>
-      <h1>Добавить своё событие</h1>
+      <h1>${editEvent ? "Редактировать мероприятие" : "Добавить своё событие"}</h1>
+      ${editEvent ? `<section class="notice"><strong>Исправьте заявку и отправьте её на повторную модерацию.</strong><p>${escapeHtml(editEvent.moderation_comment || 'Администратор отклонил заявку без комментария.')}</p><a href="#event/${editEvent.id}">Вернуться к событию</a></section>` : ''}
 
       <form id="event-form">
         <div class="form-grid">
@@ -1641,7 +1683,7 @@ function createPage() {
         <p class="error" id="form-error" role="alert"></p>
 
         <button class="primary" type="submit">
-          Создать событие
+          ${editEvent ? 'Сохранить изменения и отправить на модерацию' : 'Создать событие'}
         </button>
       </form>
     </section>
@@ -1659,9 +1701,19 @@ function createPage() {
   }
 
 
-  if (draft) {
-    Object.keys(draft).forEach(key => {
-      if (key !== 'image' && form.elements[key]) form.elements[key].value = String(draft[key]);
+  const formValues = editEvent || draft;
+  if (formValues) {
+    Object.keys(formValues).forEach(key => {
+      if (key !== 'image' && key !== 'id' && key !== 'creator_id' &&
+          key !== 'count' && key !== 'status' && key !== 'moderation_comment' &&
+          form.elements[key]) {
+        const field = form.elements[key];
+        const value = String(formValues[key] ?? '');
+        if (field.tagName === 'SELECT' && value && !Array.from(field.options).some(o => o.value === value)) {
+          field.add(new Option(value, value));
+        }
+        field.value = value;
+      }
     });
   }
 
@@ -1682,16 +1734,33 @@ function createPage() {
   let photoVersion = 0;
   let photoInvalid = false;
   let photoChecking = false;
+  let existingImageUrl = editEvent?.image_url || null;
+
+  if (existingImageUrl) {
+    imagePreview.src = existingImageUrl;
+    imagePanel.hidden = false;
+    imageStatus.textContent = 'Текущая обложка мероприятия';
+  }
+
   form.querySelector('#remove-image').onclick = () => {
-    photoVersion++; imageInput.value = ''; imagePreview.removeAttribute('src');
-    imagePanel.hidden = true; imageStatus.textContent = ''; photoInvalid = false; photoChecking = false;
+    photoVersion++;
+    imageInput.value = '';
+    imagePreview.removeAttribute('src');
+    imagePanel.hidden = true;
+    imageStatus.textContent = '';
+    photoInvalid = false;
+    photoChecking = false;
+    existingImageUrl = null;
   };
   imageInput.onchange = async () => {
     const version = ++photoVersion;
     imagePreview.removeAttribute('src'); imagePanel.hidden = true;
     photoInvalid = false; photoChecking = false; imageStatus.textContent = '';
     const file = imageInput.files[0];
-    if (!file) return;
+    if (!file) {
+      if (existingImageUrl) { imagePreview.src = existingImageUrl; imagePanel.hidden = false; imageStatus.textContent = 'Текущая обложка мероприятия'; }
+      return;
+    }
     imagePanel.hidden = false; // Keep removal available even for invalid files.
     if (!/\.(jpe?g|png|webp)$/i.test(file.name)) {
       imageStatus.textContent = 'Выберите JPG, PNG или WEBP. HEIC и SVG не поддерживаются.'; photoInvalid = true; return;
@@ -1720,21 +1789,29 @@ function createPage() {
   };
 
   form.oninput = () => {
+    if (editEvent) return;
     const formData = new FormData(form);
     formData.delete('image');
-
     draft = Object.fromEntries(formData);
   };
 
   form.onsubmit = async event => {
     event.preventDefault();
+    if (form.dataset.submitting === 'true') return;
+    form.dataset.submitting = 'true';
+    const submitButton = form.querySelector('[type="submit"]');
+    const originalLabel = submitButton.textContent;
+    submitButton.disabled = true;
+    submitButton.textContent = 'Сохраняем…';
+    try {
 
     const data = Object.fromEntries(new FormData(form));
 
     const imageFile = data.image;
     delete data.image;
 
-    const error = document.querySelector('#form-error');
+    const error = form.querySelector('#form-error');
+    error.textContent = '';
 
     if (photoChecking || photoInvalid) {
       error.textContent = photoChecking ? 'Дождитесь проверки фото.' : 'Исправьте ошибку фото или нажмите «Убрать фото».';
@@ -1798,7 +1875,7 @@ function createPage() {
           body: imageData
         });
 
-        const uploadResult = await uploadResponse.json();
+        const uploadResult = await readResponse(uploadResponse);
 
         if (!uploadResponse.ok) {
           error.textContent = uploadResult.error || 'Не удалось загрузить изображение.';
@@ -1806,9 +1883,11 @@ function createPage() {
         }
 
         imageUrl = uploadResult.image_url;
+        existingImageUrl = imageUrl;
+        imageInput.value = '';
 
-      } catch {
-        error.textContent = 'Не удалось загрузить изображение. Проверьте соединение с сервером.';
+      } catch (failure) {
+        error.textContent = failure.message || 'Не удалось загрузить изображение.';
         return;
       }
     }
@@ -1817,31 +1896,40 @@ function createPage() {
     const payload = {
       ...data,
       regular: data.regular === 'true',
-      image_url: imageUrl
+      image_url: imageUrl || existingImageUrl || null
     };
 
-    // Отправка мероприятия на сервер
+    // Create a new event or resubmit the corrected rejected event.
     try {
-      const response = await fetch('/api/events', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
+      const response = await fetch(
+        editEvent ? `/api/events/${editEvent.id}` : '/api/events',
+        {
+          method: editEvent ? 'PUT' : 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        }
+      );
 
-      const result = await response.json();
+      const result = await readResponse(response);
 
       if (!response.ok) {
         error.textContent = result.error || 'Не удалось создать событие.';
         return;
       }
 
-      draft = null;
-      location.hash = `event/${result.id}`;
+      if (!editEvent) draft = null;
+      const savedEvent = result.event || result;
+      location.hash = `event/${savedEvent.id}`;
 
     } catch (requestError) {
-      error.textContent = 'Сервер недоступен. Запустите Flask-приложение.';
+      error.textContent = requestError.message || 'Не удалось связаться с сервером. Попробуйте ещё раз.';
+    }
+    } finally {
+      form.dataset.submitting = 'false';
+      submitButton.disabled = false;
+      submitButton.textContent = originalLabel;
     }
   };
 }
@@ -1875,11 +1963,26 @@ async function render() {
     }
     catalogPage();
 
-  } else if (route === 'map') {
-    await mapPage();
+  } else if (route === 'map' || route.startsWith('map/')) {
+    await mapPage(Number(route.split('/')[1]) || null);
 
   } else if (route === 'create') {
     createPage();
+
+  } else if (route.startsWith('edit/')) {
+    const id = Number(route.split('/')[1]);
+    try {
+      const response = await fetch(`/api/events/${id}`, {cache: 'no-store'});
+      const event = response.ok ? await response.json() : null;
+      if (!event || event.status !== 'rejected' || event.creator_id !== currentUser?.id) {
+        content.innerHTML = '<section class="empty"><h1>Редактирование недоступно</h1><p>Редактировать можно только собственные отклонённые мероприятия.</p><a href="#account">Вернуться в личный кабинет</a></section>';
+      } else {
+        if (location.hash.slice(1) !== route) return;
+        createPage(event);
+      }
+    } catch {
+      content.innerHTML = '<p class="error">Не удалось загрузить мероприятие. Попробуйте ещё раз.</p><a href="#account">Мои события</a>';
+    }
 
   } else if (route === 'preview' && draft) {
     eventPage(
@@ -1904,6 +2007,7 @@ async function render() {
       return;
     }
 
+    if (location.hash.slice(1) && location.hash.slice(1) !== route) return;
     await eventPage(event);
 
   } else if (route === 'login') {
@@ -2004,7 +2108,7 @@ async function commentsPanel(eventId) {
   try { await refresh(); } catch(e) { status.textContent = e.message; }
 }
 
-async function mapPage() {
+async function mapPage(focusedId = null) {
   content.innerHTML = `<a class="back" href="#catalog">← В каталог</a><h1>Карта событий</h1>
     <p class="muted">Выберите этаж и событие. Точки указаны по номеру кабинета из школьного навигатора.</p>
     <label class="field">Этаж<select id="map-floor">${[0,1,2,3].map(n => `<option value="${n}" ${n===2?'selected':''}>${n}</option>`).join('')}</select></label>
@@ -2017,15 +2121,22 @@ async function mapPage() {
     </div>
     <p class="small muted">Увеличьте карту и прокручивайте её по горизонтали и вертикали.</p>
     <div class="map-layout"><div class="map-scroll" tabindex="0" role="region" aria-label="План школы, прокручиваемая область"><div class="school-map"><img alt="План этажа школы"/><div class="map-pins"></div></div></div><div id="map-events"></div></div><p id="map-message" role="status"></p>`;
+  const mapRoot = content.querySelector('.map-layout');
   try {
     const [roomResponse, eventResponse] = await Promise.all([fetch('/static/maps/rooms.json'), fetch('/api/events')]);
     if (!roomResponse.ok || !eventResponse.ok) throw new Error('Не удалось загрузить карту');
     const rooms = await roomResponse.json(), mapEvents = await eventResponse.json();
-    const normalize = name => String(name).trim().toLowerCase().replace(/^с(?=\d)/, 'c');
-    const findRoom = event => rooms.find(r => normalize(r.name) === normalize(event.room));
+    let focused = mapEvents.find(e => e.id === focusedId);
+    if (focusedId && !focused) {
+      const response = await fetch(`/api/events/${focusedId}`);
+      if (response.ok) { focused = await response.json(); mapEvents.push(focused); }
+    }
+    if (!mapRoot.isConnected) return;
+    const findRoom = event => findSchoolRoom(rooms,event.room);
     const image = content.querySelector('.school-map img');
     const pins = content.querySelector('.map-pins');
     const select = content.querySelector('#map-floor');
+    if (focused && findRoom(focused)) select.value = findRoom(focused).floor;
     const zoom = content.querySelector('#map-zoom');
     const mapCanvas = content.querySelector('.school-map');
     const scroll = content.querySelector('.map-scroll');
@@ -2051,7 +2162,7 @@ async function mapPage() {
       image.onload = () => {
         pins.innerHTML = visible.map((e,i) => {
           const r = findRoom(e);
-          return `<a class="map-pin" href="#event/${e.id}" title="${escapeHtml(e.title)}" style="left:${100*r.x/r.reference_width}%;top:${100*r.y/r.reference_height}%">${i+1}</a>`;
+          return `<a class="map-pin ${e.id === focusedId ? 'focused-pin' : ''}" href="#event/${e.id}" title="${escapeHtml(e.title)}" style="left:${100*r.x/r.reference_width}%;top:${100*r.y/r.reference_height}%">${i+1}</a>`;
         }).join('');
       };
       pins.innerHTML = '';
@@ -2062,5 +2173,46 @@ async function mapPage() {
       content.querySelector('#map-events').innerHTML = `<h2>На этаже</h2>${visible.length ? visible.map((e,i)=>`<div>${i+1}. ${link(e)}</div>`).join('') : '<p>Нет событий на этом этаже.</p>'}<h2>Без точки на карте</h2>${unplaced.length ? unplaced.map(link).join('') : '<p>Все события размещены.</p>'}`;
     }
     select.onchange = draw; draw();
-  } catch(e) { content.querySelector('#map-message').textContent = e.message; }
+  } catch(e) { if (mapRoot.isConnected) content.querySelector('#map-message').textContent = e.message; }
+}
+
+async function readResponse(response) {
+  const data = await response.json().catch(() => null);
+  if (!data) throw new Error(`Сервер вернул ошибку (${response.status}). Попробуйте снова позже.`);
+  return data;
+}
+let roomsPromise;
+function loadRooms() {
+  if (!roomsPromise) roomsPromise = fetch('/static/maps/rooms.json').then(r => {
+    if (!r.ok) throw new Error('Не удалось загрузить план школы');
+    return r.json();
+  }).catch(error => { roomsPromise = null; throw error; });
+  return roomsPromise;
+}
+function findSchoolRoom(rooms, name) {
+  const normalize = value => String(value || '').trim().toLowerCase().replace(/^с(?=\d)/, 'c');
+  return rooms.find(room => normalize(room.name) === normalize(name));
+}
+function roomMapMarkup(room, compact = false) {
+  const w = room.reference_width * (compact ? 0.32 : 0.48);
+  const h = w * 0.56;
+  const x = Math.max(0, Math.min(room.reference_width-w, room.x-w/2));
+  const y = Math.max(0, Math.min(room.reference_height-h, room.y-h/2));
+  const radius = room.reference_width * 0.009;
+  return `<div class="room-map-preview"><svg viewBox="${x} ${y} ${w} ${h}" role="img" aria-label="Кабинет ${escapeHtml(room.name)}, этаж ${room.floor}">
+    <image href="/static/maps/floor_${room.floor}.png" width="${room.reference_width}" height="${room.reference_height}"/>
+    <circle cx="${room.x}" cy="${room.y}" r="${radius*1.8}" fill="#fff" fill-opacity="0.8"/>
+    <circle cx="${room.x}" cy="${room.y}" r="${radius}" fill="#a43e25" stroke="#fff" stroke-width="${radius/4}"/>
+    </svg><span class="map-caption">📍 ${escapeHtml(room.name)} · этаж ${room.floor}</span></div>`;
+}
+async function eventLocationCard(event, host) {
+  try {
+    const rooms = await loadRooms();
+    if (!host.isConnected) return;
+    const room = findSchoolRoom(rooms,event.room);
+    host.innerHTML = `<h2>Место на карте</h2>${room ? roomMapMarkup(room) : `<p>${escapeHtml(event.place)} · ${escapeHtml(event.room)}</p><p class="muted">Для этого места точка на школьном плане не найдена. Уточните место у организатора.</p>`}
+      <a class="secondary" href="${event.id ? '#map/'+event.id : '#map'}">Открыть карту школы</a>`;
+  } catch {
+    if (host.isConnected) host.innerHTML = '<h2>Место на карте</h2><p class="muted">План временно недоступен. Попробуйте открыть карту ещё раз.</p><a href="#map">Карта школы</a>';
+  }
 }

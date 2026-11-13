@@ -2,7 +2,7 @@ import os, tempfile, unittest, io
 from unittest.mock import patch
 from datetime import datetime, timedelta
 from PIL import Image
-_tmp = tempfile.TemporaryDirectory()
+_tmp = tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(__file__)))
 os.environ['DATABASE_URL'] = 'sqlite:///' + os.path.join(_tmp.name, 'test.db').replace('\\', '/')
 os.environ['UPLOAD_FOLDER'] = os.path.join(_tmp.name, 'uploads')
 os.environ['SECRET_KEY'] = 'test-only-secret'
@@ -101,6 +101,131 @@ class Features(unittest.TestCase):
         self.assertEqual(self.client.get('/api/events').json,[])
         payload['image_url']='https://example.com/photo.jpg'
         self.assertEqual(self.client.post('/api/events',json=payload).status_code,400)
+
+    def test_rejected_event_can_be_edited_and_resubmitted_by_creator(self):
+        uid = self.login()
+        eid = self.event("rejected")
+        event = m.db.session.get(m.Event, eid)
+        event.creator_id = uid
+        event.moderation_comment = "Уточните место проведения"
+        event.count = 3
+        m.db.session.commit()
+
+        payload = dict(
+            title="Updated event", summary="Updated summary",
+            description="Updated details", activity="Sport", type="Club",
+            duration="Hour", place="School", room="AS2",
+            date="2026-11-21", time="18:00", end="19:00",
+            organizer="Student", regular=False, chat="", contact="",
+            image_url=None, card_color="blue", card_emoji="🏀",
+            tagline="Updated"
+        )
+        response = self.client.put(f"/api/events/{eid}", json=payload)
+        self.assertEqual(response.status_code, 200)
+        updated = response.json["event"]
+        self.assertEqual(updated["id"], eid)
+        self.assertEqual(updated["creator_id"], uid)
+        self.assertEqual(updated["title"], "Updated event")
+        self.assertEqual(updated["status"], "pending")
+        self.assertIsNone(updated["moderation_comment"])
+        self.assertEqual(updated["count"], 3)
+
+    def test_only_creator_can_edit_rejected_event(self):
+        creator_id = self.login("Creator")
+        eid = self.event("rejected")
+        event = m.db.session.get(m.Event, eid)
+        event.creator_id = creator_id
+        m.db.session.commit()
+
+        self.login("Other")
+        response = self.client.put(f"/api/events/{eid}", json={
+            "title": "Hack"
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(m.db.session.get(m.Event, eid).title, "Test")
+
+    def test_non_rejected_event_cannot_be_edited(self):
+        creator_id = self.login("Creator")
+        eid = self.event("pending")
+        event = m.db.session.get(m.Event, eid)
+        event.creator_id = creator_id
+        m.db.session.commit()
+        response = self.client.put(f"/api/events/{eid}", json={
+            "title": "Hack"
+        })
+        self.assertEqual(response.status_code, 409)
+
+    def valid_payload(self):
+        return dict(title='Event', summary='Summary', description='Details',
+                    activity='Sport', type='Club', duration='Hour', place='School',
+                    room='AS1', date='2026-11-20', time='17:00', end='18:00',
+                    organizer='Student', card_color='cream')
+
+    def test_invalid_event_inputs_never_create_rows(self):
+        self.login()
+        for field, value in [('title', 'x'*151), ('room', []),
+                             ('date', '2026-02-30'), ('time', '25:00'),
+                             ('end', '16:00'), ('regular', 'false'),
+                             ('chat', 'javascript:alert(1)'), ('card_color', 'red')]:
+            with self.subTest(field=field):
+                payload=self.valid_payload(); payload[field]=value
+                self.assertEqual(self.client.post('/api/events', json=payload).status_code,400)
+        for body in ['[]', '{broken', 'null']:
+            self.assertEqual(self.client.post('/api/events',data=body,content_type='application/json').status_code,400)
+        self.assertEqual(m.Event.query.count(),0)
+
+    def test_legacy_cover_survives_edit_and_can_be_removed(self):
+        uid=self.login(); eid=self.event('rejected')
+        event=m.db.session.get(m.Event,eid); event.creator_id=uid
+        event.image_url='/static/uploads/legacy.jpg'; m.db.session.commit()
+        payload=self.valid_payload(); payload['image_url']=event.image_url
+        response=self.client.put(f'/api/events/{eid}',json=payload)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json['event']['image_url'],payload['image_url'])
+        event=m.db.session.get(m.Event,eid); event.status='rejected'; m.db.session.commit()
+        payload['image_url']=None
+        response=self.client.put(f'/api/events/{eid}',json=payload)
+        self.assertEqual(response.status_code,200)
+        self.assertIsNone(response.json['event']['image_url'])
+
+    def test_cannot_attach_someone_elses_photo(self):
+        self.login('Owner'); stream=io.BytesIO()
+        Image.new('RGB',(20,20)).save(stream,'PNG'); stream.seek(0)
+        photo=self.client.post('/api/upload-image',data={'image':(stream,'test.png')}).json['image_url']
+        payload=self.valid_payload(); payload['image_url']=photo
+        self.login('Other')
+        self.assertEqual(self.client.post('/api/events',json=payload).status_code,403)
+        self.assertEqual(m.Event.query.count(),0)
+
+    def test_complete_moderation_and_participation_flow(self):
+        uid=self.login('Creator')
+        payload=self.valid_payload()
+        eid=self.client.post('/api/events',json=payload).json['id']
+        admin=self.login('Admin','admin')
+        self.assertEqual(self.client.post(f'/api/admin/events/{eid}/reject',json={'comment':'Clarify'}).status_code,200)
+        with self.client.session_transaction() as s:s['user_id']=uid
+        payload['title']='Corrected'
+        self.assertEqual(self.client.put(f'/api/events/{eid}',json=payload).status_code,200)
+        self.assertEqual(self.client.get('/api/events').json,[])
+        self.assertEqual(self.client.post(f'/api/events/{eid}/comments',json={'body':'hi'}).status_code,404)
+        with self.client.session_transaction() as s:s['user_id']=admin
+        self.assertEqual(self.client.post(f'/api/admin/events/{eid}/approve').status_code,200)
+        with self.client.session_transaction() as s:s['user_id']=uid
+        self.assertEqual(len(self.client.get('/api/events').json),1)
+        self.assertEqual(self.client.post(f'/api/events/{eid}/comments',json={'body':'hi'}).status_code,200)
+        self.assertEqual(self.client.post(f'/api/events/{eid}/join').status_code,201)
+        self.assertEqual(self.client.post(f'/api/events/{eid}/join').status_code,400)
+        self.assertEqual(m.db.session.get(m.Event,eid).count,1)
+        self.assertEqual(self.client.delete(f'/api/events/{eid}/join').status_code,200)
+        self.assertEqual(m.db.session.get(m.Event,eid).count,0)
+        self.assertEqual(m.Event.query.count(),1)
+
+    def test_api_errors_and_stale_session(self):
+        response=self.client.get('/api/events/999')
+        self.assertEqual(response.status_code,404); self.assertTrue(response.is_json)
+        self.assertEqual(response.headers['Cache-Control'],'no-store')
+        with self.client.session_transaction() as s:s['user_id']=999
+        self.assertEqual(self.client.post('/api/events',json=self.valid_payload()).status_code,401)
 
     def test_map_and_origin(self):
         import json

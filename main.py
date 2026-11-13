@@ -10,7 +10,9 @@ import uuid
 import re
 from PIL import Image, UnidentifiedImageError
 from flask import send_from_directory, send_file
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from werkzeug.exceptions import HTTPException
+from urllib.parse import urlsplit
 import io
 from PIL import ImageOps
 
@@ -43,6 +45,10 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     "pool_recycle": 300,
 }
 
+if os.environ.get("VERCEL") and not database_url:
+    raise RuntimeError("DATABASE_URL must be configured on Vercel")
+if os.environ.get("VERCEL") and not os.environ.get("SECRET_KEY"):
+    raise RuntimeError("SECRET_KEY must be configured on Vercel")
 db = SQLAlchemy(app)
 
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=os.environ.get("APP_ENV") == "production")
@@ -263,7 +269,7 @@ class Comment(db.Model):
     event_id = db.Column(db.Integer, db.ForeignKey("event.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     body = db.Column(db.String(2000), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 with app.app_context():
     db.create_all()
@@ -499,6 +505,11 @@ def filter_events(query_base, args):
 
 @app.before_request
 def protect_requests():
+    if request.is_json and not isinstance(request.get_json(silent=True), dict):
+        return jsonify(error="Ожидается JSON-объект с полями формы"), 400
+    if session.get("user_id") and not current_user():
+        session.clear()
+
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         origin = request.headers.get("Origin")
         if origin and origin != request.host_url.rstrip("/"):
@@ -507,24 +518,46 @@ def protect_requests():
         data = request.get_json(silent=True) or {}
         email = normalize_email(data.get("email"))
         verify = request.path.endswith("/verify")
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         keys = [("ip:" + str(request.remote_addr), 50, 600),
                 (("verify:" if verify else "send:") + email, 5 if verify else 1, 600 if verify else 60)]
         for key, limit, seconds in keys:
-            row = db.session.get(SecurityCounter, key)
-            if not row:
-                row = SecurityCounter(key=key, count=0, reset=now + timedelta(seconds=seconds))
-                db.session.add(row)
-            if row.reset < now:
-                row.count = 0
-                row.reset = now + timedelta(seconds=seconds)
-            if row.count >= limit:
+            if not db.session.get(SecurityCounter, key):
+                try:
+                    with db.session.begin_nested():
+                        db.session.add(SecurityCounter(key=key, count=0, reset=now + timedelta(seconds=seconds)))
+                        db.session.flush()
+                except IntegrityError:
+                    pass  # Another request created the same counter.
+            SecurityCounter.query.filter(SecurityCounter.key == key, SecurityCounter.reset <= now).update(
+                {"count": 0, "reset": now + timedelta(seconds=seconds)}, synchronize_session=False)
+            changed = SecurityCounter.query.filter(SecurityCounter.key == key, SecurityCounter.count < limit).update(
+                {"count": SecurityCounter.count + 1}, synchronize_session=False)
+            if not changed:
                 db.session.commit()
                 return jsonify(error="Слишком много попыток. Попробуйте позже."), 429
-            row.count += 1
         if not verify:
             AuthCode.query.filter_by(email=email).delete()
         db.session.commit()
+
+@app.after_request
+def api_cache_control(response):
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+@app.errorhandler(HTTPException)
+def api_http_error(error):
+    if request.path.startswith("/api/"):
+        messages = {404: "Запись не найдена или недоступна", 405: "Метод не поддерживается", 400: "Некорректный запрос"}
+        return jsonify(error=messages.get(error.code, "Не удалось выполнить запрос")), error.code
+    return error
+
+@app.errorhandler(SQLAlchemyError)
+def database_error(error):
+    db.session.rollback()
+    app.logger.error("Database request failed: %s", type(error).__name__)
+    return jsonify(error="Не удалось сохранить или загрузить данные. Попробуйте снова позже."), 503
 
 @app.errorhandler(413)
 def upload_too_large(error):
@@ -554,7 +587,7 @@ def event_comments(event_id):
         body = str((request.get_json(silent=True) or {}).get("body", "")).strip()
         if not 1 <= len(body) <= 2000:
             return jsonify(error="Комментарий: от 1 до 2000 символов"), 400
-        recent = Comment.query.filter(Comment.user_id == user.id, Comment.created_at > datetime.utcnow() - timedelta(seconds=10)).first()
+        recent = Comment.query.filter(Comment.user_id == user.id, Comment.created_at > datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=10)).first()
         if recent:
             return jsonify(error="Подождите 10 секунд"), 429
         db.session.add(Comment(event_id=event_id, user_id=user.id, body=body))
@@ -622,7 +655,7 @@ def join_event(event_id):
         return jsonify({"error": "Необходимо войти в аккаунт"}), 401
 
     # Проверяем, существует ли мероприятие
-    event = Event.query.get(event_id)
+    event = Event.query.filter_by(id=event_id).with_for_update().first()
 
     if not event:
         return jsonify({"error": "Мероприятие не найдено"}), 404
@@ -663,6 +696,8 @@ def leave_event(event_id):
     if not user_id:
         return jsonify({"error": "Необходимо войти в аккаунт"}), 401
 
+    event = Event.query.filter_by(id=event_id).with_for_update().first()
+
     registration = Registration.query.filter_by(
         user_id=user_id,
         event_id=event_id
@@ -671,7 +706,6 @@ def leave_event(event_id):
     if not registration:
         return jsonify({"error": "Вы не записаны на это мероприятие"}), 400
 
-    event = Event.query.get(event_id)
 
     if not event:
         return jsonify({"error": "Мероприятие не найдено"}), 404
@@ -781,71 +815,101 @@ def api_upload_image():
         "image_url": image_url
     }), 201
 
+EVENT_LIMITS = {
+    "title": 150, "summary": 300, "description": 4000, "activity": 100,
+    "type": 100, "duration": 50, "place": 100, "room": 100,
+    "date": 20, "time": 10, "end": 10, "organizer": 100,
+    "chat": 200, "contact": 200, "card_color": 20, "card_emoji": 20, "tagline": 80
+}
+EVENT_REQUIRED = ("title", "summary", "description", "activity", "type", "duration", "place", "room", "date", "time", "end", "organizer")
+
+
+def event_form(data, user_id, existing=None):
+    values = {}
+    for field, limit in EVENT_LIMITS.items():
+        value = data.get(field, "")
+        if value is None and field not in EVENT_REQUIRED:
+            value = ""
+        if not isinstance(value, str) or len(value.strip()) > limit:
+            return None, (jsonify(error=f"Поле {field}: требуется текст до {limit} символов"), 400)
+        values[field] = value.strip()
+    if any(not values[field] for field in EVENT_REQUIRED):
+        return None, (jsonify(error="Заполните обязательные поля"), 400)
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", values["date"]):
+            raise ValueError()
+        datetime.strptime(values["date"], "%Y-%m-%d")
+        for key in ("time", "end"):
+            if not re.fullmatch(r"\d{2}:\d{2}", values[key]):
+                raise ValueError()
+            datetime.strptime(values[key], "%H:%M")
+        if values["end"] <= values["time"]:
+            raise ValueError()
+    except ValueError:
+        return None, (jsonify(error="Проверьте дату и время. Окончание должно быть позже начала в тот же день."), 400)
+    regular = data.get("regular", False)
+    if not isinstance(regular, bool):
+        return None, (jsonify(error="Некорректное значение повторения"), 400)
+    values["regular"] = regular
+    values["card_color"] = values["card_color"] or "cream"
+    if values["card_color"] not in {"cream", "blue", "green", "lavender", "peach", "pink", "dark"}:
+        return None, (jsonify(error="Выберите цвет карточки из списка"), 400)
+    for field in ("chat", "contact"):
+        if values[field]:
+            try:
+                url = urlsplit(values[field])
+                if url.scheme not in {"http", "https"} or not url.netloc or url.username or any(c.isspace() for c in values[field]):
+                    raise ValueError()
+            except ValueError:
+                return None, (jsonify(error="Контакты должны быть корректными HTTP(S) ссылками"), 400)
+    photo = data.get("image_url") or None
+    if photo and not (existing and photo == existing.image_url):
+        match = re.fullmatch(r"/media/([a-f0-9]{32})\.jpg", photo) if isinstance(photo, str) else None
+        if not match:
+            return None, (jsonify(error="Сначала загрузите фото"), 400)
+        uploaded = db.session.get(EventImage, match.group(1))
+        if not uploaded or uploaded.user_id != user_id:
+            return None, (jsonify(error="Это изображение недоступно для вашего аккаунта"), 403)
+    values["image_url"] = photo
+    return values, None
+
+
 @app.post("/api/events")
 def api_create_event():
-    data = request.get_json(silent=True) or {}
-
-    required = [
-        "title", "summary", "description", "activity", "type",
-        "duration", "place", "room", "date", "time", "end", "organizer"
-    ]
-
-    missing = [field for field in required if not str(data.get(field, "")).strip()]
-    if missing:
-        return jsonify({"error": "Не заполнены обязательные поля", "fields": missing}), 400
-
-    try:
-        datetime.strptime(str(data["date"]), "%Y-%m-%d")
-        datetime.strptime(str(data["time"]), "%H:%M")
-        datetime.strptime(str(data["end"]), "%H:%M")
-    except ValueError:
-        return jsonify(error="Некорректная дата или время"), 400
-    if any(len(str(value)) > 10000 for value in data.values()):
-        return jsonify(error="Слишком длинное поле"), 400
-    if data["end"] <= data["time"]:
-        return jsonify({"error": "Окончание должно быть позже начала"}), 400
-
-    user_id = session.get("user_id")
-
-    if not user_id:
-        return jsonify({
-            "error": "Необходимо войти в аккаунт"
-        }), 401
-
-    if data.get("image_url") and not re.fullmatch(r"/media/[a-f0-9]{32}\.jpg", str(data["image_url"])):
-        return jsonify({"error": "Сначала загрузите фото"}), 400
-    for field in ("chat", "contact"):
-        if data.get(field) and not str(data[field]).startswith(("https://", "http://")):
-            return jsonify(error="Контакты должны быть HTTP(S) ссылками"), 400
-    new_event = Event(
-        creator_id=user_id,
-        title=str(data["title"]).strip(),
-        summary=str(data.get("summary", "")).strip(),
-        description=str(data["description"]).strip(),
-        activity=str(data["activity"]).strip(),
-        type=str(data["type"]).strip(),
-        duration=str(data["duration"]).strip(),
-        place=str(data["place"]).strip(),
-        room=str(data["room"]).strip(),
-        date=str(data["date"]).strip(),
-        time=str(data["time"]).strip(),
-        end=str(data["end"]).strip(),
-        regular=bool(data.get("regular", False)),
-        organizer=str(data["organizer"]).strip(),
-        count=0,
-        chat=str(data.get("chat", "")).strip(),
-        contact=str(data.get("contact", "")).strip(),
-        status="pending",
-        image_url=data.get("image_url") or None,
-        card_color=data.get("card_color") or "cream",
-        card_emoji=data.get("card_emoji") or None,
-        tagline=data.get("tagline") or None
-    )
-
-    db.session.add(new_event)
+    user = current_user()
+    if not user:
+        return jsonify(error="Необходимо войти в аккаунт"), 401
+    values, error = event_form(request.get_json(silent=True) or {}, user.id)
+    if error:
+        return error
+    event = Event(**values, creator_id=user.id, status="pending", count=0)
+    db.session.add(event)
     db.session.commit()
+    return jsonify(event.to_dict()), 201
 
-    return jsonify(new_event.to_dict()), 201
+
+@app.put("/api/events/<int:event_id>")
+def api_edit_rejected_event(event_id):
+    user = current_user()
+    if not user:
+        return jsonify(error="Необходимо войти в аккаунт"), 401
+    event = db.get_or_404(Event, event_id)
+    if event.creator_id != user.id:
+        return jsonify(error="Вы можете редактировать только свои мероприятия"), 403
+    if event.status != "rejected":
+        return jsonify(error="Редактировать можно только отклонённые мероприятия"), 409
+    values, error = event_form(request.get_json(silent=True) or {}, user.id, event)
+    if error:
+        return error
+    values.update(status="pending", moderation_comment=None)
+    changed = Event.query.filter_by(id=event_id, creator_id=user.id, status="rejected").update(values, synchronize_session=False)
+    if not changed:
+        db.session.rollback()
+        return jsonify(error="Статус уже изменился. Обновите страницу."), 409
+    db.session.commit()
+    db.session.expire_all()
+    return jsonify(success=True, message="Исправленное мероприятие отправлено на повторную модерацию", event=db.session.get(Event, event_id).to_dict())
+
 
 @app.get("/api/me/events")
 def my_events():
@@ -982,8 +1046,11 @@ def register_verify():
         role="user"
     )
 
+    consumed = AuthCode.query.filter_by(id=auth_code.id).delete(synchronize_session=False)
+    if not consumed:
+        db.session.rollback()
+        return jsonify(error="Код уже использован. Запросите новый."), 400
     db.session.add(user)
-    db.session.delete(auth_code)
     db.session.commit()
 
     session.clear()
@@ -1084,7 +1151,10 @@ def login_verify():
             "error": "Пользователь не найден"
         }), 404
 
-    db.session.delete(auth_code)
+    consumed = AuthCode.query.filter_by(id=auth_code.id).delete(synchronize_session=False)
+    if not consumed:
+        db.session.rollback()
+        return jsonify(error="Код уже использован. Запросите новый."), 400
     db.session.commit()
 
     session.clear()
@@ -1200,7 +1270,10 @@ def reject_event(event_id):
     event = Event.query.get_or_404(event_id)
 
     data = request.get_json(silent=True) or {}
-    comment = data.get("comment", "").strip()
+    comment = data.get("comment", "")
+    if not isinstance(comment, str) or len(comment) > 2000:
+        return jsonify(error="Комментарий администратора должен быть текстом до 2000 символов"), 400
+    comment = comment.strip()
 
     event.status = "rejected"
     event.moderation_comment = comment or None

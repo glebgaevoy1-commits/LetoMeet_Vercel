@@ -1,3 +1,5 @@
+> Latest update and deployment steps: RELEASE-2026-11-13.md.
+
 # LETOMEET updated app
 
 ## What is included
@@ -39,11 +41,11 @@ Floor images come from the supplied letovo-navigator-main.zip. 149 ClassNode rec
 python -m unittest -v test_features
 python -m py_compile main.py
 ```
-Eleven integration tests cover registration/login, consumed/expired codes, throttling, email failure, image validation/serving, comment permissions/visibility, map coordinate bounds and cross-origin rejection. JavaScript syntax was checked separately. This is a Flask app with no frontend build step. Browser map/color checks passed; photo-picker UI testing and live SMTP/PostgreSQL delivery remain unverified.
+Nineteen integration tests cover registration/login, consumed/expired codes, throttling, email failure, image validation/serving, comment permissions/visibility, map coordinate bounds and cross-origin rejection. JavaScript syntax was checked separately. This is a Flask app with no frontend build step. Browser map/color checks passed; photo-picker UI testing and live SMTP/PostgreSQL delivery remain unverified.
 
-Comments show the latest 100 entries, newest first, and preserve escaped text. Signed-in users can remove their own comments; admins can remove any comment. No email notifications, reporting workflow, pagination, or comment editing is included. Existing card customization is available at event creation; an owner editing workflow is not added. Uploaded image database rows are not automatically garbage collected when an abandoned event form is discarded. Add storage quotas/cleanup and backup retention suitable for your school.
+Comments show the latest 100 entries, newest first, and preserve escaped text. Signed-in users can remove their own comments; admins can remove any comment. No email notifications, reporting workflow, pagination, or comment editing is included. Card customization is available at creation and when the creator edits a rejected event for resubmission. See RELEASE-2026-11-13.md. Uploaded image database rows are not automatically garbage collected when an abandoned event form is discarded. Add storage quotas/cleanup and backup retention suitable for your school.
 
-The database-backed rate counters are suitable for modest traffic; multi-worker concurrent updates are not atomic. Before wider deployment, add centralized atomic throttling at the gateway or in Redis, database uniqueness/atomic consumption for concurrent OTP verification, retention cleanup for counters/codes, and provider-level sending limits. The retained app's account/event APIs can disclose school email addresses to authorized administrators; review school privacy and moderation requirements before launch.
+Rate counters use conditional database updates and verification codes use conditional single-use consumption. These paths have functional SQLite tests but have not been load-tested against concurrent PostgreSQL workers. Before wider deployment, validate concurrent traffic, configure gateway/provider sending limits, and add retention cleanup for counters/codes. The retained app's account/event APIs can disclose school email addresses to authorized administrators; review school privacy and moderation requirements before launch.
 
 ## Changed files
 main.py; static/script.js; static/style.css (additive styles); templates/index.html (map link); requirements.txt (Pillow); new static/maps/*; test_features.py; migrations/001_event_features.sql; UPDATE-NOTES.md; .env.example; SETUP.md. Original uploaded ZIPs and GitHub repository were not modified.

@@ -628,3 +628,15 @@ dialog::backdrop { background: #29282066; }
 .upload-preview {display:block;max-width:100%;max-height:260px;border-radius:12px;object-fit:contain;margin:12px 0}
 .upload-preview:not([src]) {display:none}
 #image-status {overflow-wrap:anywhere}
+
+.event-location-card {margin-top:28px;padding:20px;border:1px solid var(--outline);border-radius:14px;background:var(--paper,#fffdf7)}
+.room-map-preview {position:relative;overflow:hidden;border-radius:10px;background:#eee;margin:12px 0}
+.room-map-preview svg {display:block;width:100%;height:auto;aspect-ratio:1.7857}
+.map-caption {display:block;padding:9px 12px;background:#f8f4e8;color:#34352f;font-size:14px}
+.catalog-map {max-width:280px;margin-top:12px}
+.catalog-map .room-map-preview {margin-bottom:0}
+.focused-pin {background:#a43e25;color:white;outline:3px solid white;z-index:2}
+button:disabled {cursor:wait;opacity:.65}
+.notice button {margin:10px}
+.event-location-card .secondary {display:inline-block;margin-top:8px}
+@media(max-width:700px){.catalog-map{max-width:100%}.event-location-card{padding:12px}}
