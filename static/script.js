@@ -664,7 +664,7 @@ async function adminPage() {
               <a class="secondary" href="#event/${event.id}">Открыть</a>
 
               ${event.status === 'approved' ? `
-                <a class="secondary" href="/api/admin/events/${event.id}/qr">
+                <a class="secondary" href="/api/events/${event.id}/qr?download=1">
                   Скачать QR
                 </a>` : ''}
 
@@ -1029,21 +1029,30 @@ function clearFilters() {
 
 
 function homePage() {
-  content.innerHTML = `
-    <section class="home" aria-label="Главная">
-      <div class="home-choices">
-        <a class="home-choice" href="#map">
-          <span>К событиям</span>
-          <span class="arrow" aria-hidden="true">↓</span>
-        </a>
-        <a class="home-choice" href="#create">
-          <span>Добавить своё<br>событие</span>
-          <span class="arrow" aria-hidden="true">↓</span>
-        </a>
-      </div>
-    </section>`;
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  const featured = trendingEvents(events,today);
+  content.innerHTML = `<section class="home" aria-label="Главная">
+    <div class="home-intro"><div><p class="eyebrow">ТВОЯ ШКОЛА. ТВОИ СОБЫТИЯ.</p><h1>Встретимся в Летово.</h1><p class="muted">Найди своих людей и планы на неделю.</p></div><a class="secondary" href="#map">На карту ↗</a></div>
+    <section class="trending" aria-label="Популярные события" aria-roledescription="карусель">
+      <div class="trending-heading"><div><h2>Сейчас в центре внимания</h2><p class="small muted">Предстоящие события · по числу записавшихся</p></div>
+      ${featured.length>1 ? '<div class="slider-controls"><button id="slide-prev" aria-label="Предыдущее событие">←</button><output id="slide-position" aria-live="polite">1 / '+featured.length+'</output><button id="slide-next" aria-label="Следующее событие">→</button></div>' : ''}</div>
+      ${featured.length ? `<div class="trending-track" tabindex="0" aria-label="Листайте события свайпом или стрелками">${featured.map((e,i)=>`<article class="trend-slide" aria-label="${i+1} из ${featured.length}">
+        <div class="trend-copy"><span class="trend-badge">${Number(e.count)>0 ? `${Number(e.count)} участников` : 'Будь первым участником'}</span><h3>${escapeHtml(e.title)}</h3><p>${escapeHtml(e.summary)}</p><p class="small">${e.regular?'Каждую неделю · ':''}${dateLabel(e.date)} · ${escapeHtml(e.time)}<br>${escapeHtml(e.place)} · ${escapeHtml(e.room)}</p><a class="primary" href="#event/${e.id}">Подробнее о событии ↗</a></div>
+        <div class="trend-art">${e.image_url?`<img src="${escapeHtml(e.image_url)}" alt="" ${i?'loading="lazy"':''} decoding="async">`:`<span aria-hidden="true">${escapeHtml(e.card_emoji||'✦')}</span><span class="trend-art-label">LETOMEET / ${String(i+1).padStart(2,'0')}</span>`}</div></article>`).join('')}</div>` : '<div class="trend-empty"><h3>Следующая встреча может быть твоей</h3><p>Пока нет предстоящих опубликованных событий.</p><a class="primary" href="#create">Предложить событие</a></div>'}
+    </section>
+    <div class="home-choices"><a class="home-choice" href="#catalog"><span>Каталог событий</span><span class="arrow" aria-hidden="true">↗</span></a><a class="home-choice" href="#create"><span>Добавить своё событие</span><span class="arrow" aria-hidden="true">+</span></a></div>
+  </section>`;
+  const track=content.querySelector('.trending-track');
+  if (!track || featured.length<2) return;
+  let index=0;
+  const prev=content.querySelector('#slide-prev'), next=content.querySelector('#slide-next'), position=content.querySelector('#slide-position');
+  const update=()=>{index=Math.round(track.scrollLeft/(track.clientWidth+16)); prev.disabled=index===0;next.disabled=index===featured.length-1;position.textContent=`${index+1} / ${featured.length}`;};
+  const move=delta=>track.scrollTo({left:Math.max(0,Math.min(featured.length-1,index+delta))*(track.clientWidth+16),behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+  prev.onclick=()=>move(-1);next.onclick=()=>move(1);
+  track.onkeydown=e=>{if(e.target!==track)return;if(e.key==='ArrowRight'||e.key==='ArrowLeft'){e.preventDefault();move(e.key==='ArrowRight'?1:-1);}};
+  track.onscroll=update;update();
 }
-
 
 function filtersPage() {
   content.innerHTML = `
@@ -1204,12 +1213,12 @@ function catalogPage() {
     </div>
 
     <div class="catalog-layout">
-      <aside class="sidebar">
+      <aside class="sidebar"><details class="catalog-filters" ${matchMedia('(min-width: 761px)').matches ? 'open' : ''}><summary>Фильтры событий</summary>
         <form id="filter-form">
           ${filterFields()}
           <button class="plain" type="button" id="reset">Сбросить фильтры</button>
         </form>
-      </aside>
+      </details></aside>
 
       <section id="results" aria-label="События" aria-live="polite"></section>
     </div>`;
@@ -1381,9 +1390,22 @@ async function eventPage(event, preview = false) {
         </aside>
       </div>
       <section class="event-location-card" id="event-location-card"><h2>Место на карте</h2><p class="muted">Загружаем план…</p></section>
+      ${!preview ? eventShareMarkup(event) : ''}
+      ${!preview && published ? `
+        <section class="event-qr-card" aria-labelledby="event-qr-title">
+          <div>
+            <h2 id="event-qr-title">QR-код события</h2>
+            <p class="muted">Отсканируйте QR-код, чтобы открыть страницу этого события.</p>
+            <a class="secondary" href="/api/events/${event.id}/qr?download=1" download>
+              Скачать QR-код
+            </a>
+          </div>
+          <img src="/api/events/${event.id}/qr" alt="QR-код мероприятия ${event.id}" width="180" height="180">
+        </section>` : ''}
     </article>`;
 
     const detail = document.querySelector('.detail');
+    if (!preview) bindEventSharing(event, detail);
     eventLocationCard(event, detail.querySelector('#event-location-card'));
     if (!preview && !published) {
       document.querySelector('#refresh-event-status').onclick = render;
@@ -1694,6 +1716,7 @@ function createPage(editEvent = null) {
           </div>
         </section>
 
+        <p class="muted">После сохранения на странице события появятся кнопки для отправки приглашения в Telegram, WhatsApp и другие приложения. Событие станет доступно всем после модерации.</p>
         <p class="error" id="form-error" role="alert"></p>
 
         <button class="primary" type="submit">
@@ -1957,7 +1980,7 @@ async function render() {
 
   const hash = location.hash;
   const route = hash.slice(1) || (location.pathname === '/map' ? 'map' : 'home');
-  navigation.hidden = route === 'home';
+  navigation.hidden = false;
 
   navigation.querySelectorAll('a').forEach(link => {
     link.removeAttribute('aria-current');
@@ -2152,7 +2175,7 @@ function normalizeRoom(name) {
 }
 
 function roomPosition(room) {
-  return {x: room.x / room.reference_width, y: room.y / room.reference_height};
+  return {x: (room.marker_x ?? room.x) / room.reference_width, y: (room.marker_y ?? room.y) / room.reference_height};
 }
 
 function pinPosition({x, y}) {
@@ -2389,11 +2412,12 @@ function findSchoolRoom(rooms, name) {
   return rooms.find(room => normalizeRoom(room.name) === normalizeRoom(name));
 }
 function roomMapMarkup(room, compact = false) {
+  room = {...room, x: room.marker_x ?? room.x, y: room.marker_y ?? room.y};
   const w = room.reference_width * (compact ? 0.32 : 0.48);
   const h = w * 0.56;
   const x = Math.max(0, Math.min(room.reference_width-w, room.x-w/2));
   const y = Math.max(0, Math.min(room.reference_height-h, room.y-h/2));
-  const radius = room.reference_width * 0.009;
+  const radius = Math.min(room.reference_width, room.reference_height) * 0.0045;
   return `<div class="room-map-preview"><svg viewBox="${x} ${y} ${w} ${h}" role="img" aria-label="Кабинет ${escapeHtml(room.name)}, этаж ${room.floor}">
     <image href="/static/maps/floor_${room.floor}.png" width="${room.reference_width}" height="${room.reference_height}"/>
     <circle cx="${room.x}" cy="${room.y}" r="${radius*1.8}" fill="#fff" fill-opacity="0.8"/>

@@ -2,7 +2,7 @@ import os, tempfile, unittest, io
 from unittest.mock import patch
 from datetime import datetime, timedelta
 from PIL import Image
-_tmp = tempfile.TemporaryDirectory()
+_tmp = tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(__file__)))
 os.environ['DATABASE_URL'] = 'sqlite:///' + os.path.join(_tmp.name, 'test.db').replace('\\', '/')
 os.environ['UPLOAD_FOLDER'] = os.path.join(_tmp.name, 'uploads')
 os.environ['SECRET_KEY'] = 'test-only-secret'
@@ -176,24 +176,23 @@ class Features(unittest.TestCase):
 
     def test_qr_permissions_and_published_status(self):
         event_id = self.event()
-        path = f'/api/admin/events/{event_id}/qr'
-        self.assertEqual(self.client.get(path).status_code, 401)
-        self.login()
-        self.assertEqual(self.client.get(path).status_code, 403)
-        self.login('Admin', 'admin')
+        path = f'/api/events/{event_id}/qr'
         with patch.dict(os.environ, {'PUBLIC_BASE_URL': 'https://school.example/'}):
             with patch.object(m.qrcode.QRCode, 'add_data', autospec=True) as add:
-                response = self.client.get(path)
+                response = self.client.get(path + '?download=1')
                 self.assertEqual(add.call_args.args[1], f'https://school.example/#event/{event_id}')
         self.assertEqual(response.status_code, 200)
         self.assertIn('attachment;', response.headers['Content-Disposition'])
         with Image.open(io.BytesIO(response.data)) as image:
             self.assertEqual(image.format, 'PNG')
         response.close()
-        event = m.db.session.get(m.Event, event_id)
-        event.status = 'pending'
-        m.db.session.commit()
-        self.assertEqual(self.client.get(path).status_code, 409)
+        for status in ['pending', 'rejected']:
+            event = m.db.session.get(m.Event, event_id)
+            event.status = status
+            m.db.session.commit()
+            self.assertEqual(self.client.get(path).status_code, 404)
+        self.login('Admin', 'admin')
+        self.assertEqual(self.client.get(path).status_code, 404)
 
     def test_reject_resubmit_approve_keeps_registration(self):
         creator = self.login()

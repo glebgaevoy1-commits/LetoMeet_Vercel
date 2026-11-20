@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#dfc878">
   <title>LETOMEET — школьные события</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='theme.js', v='20261120b') }}"></script>
+  <script src="{{ url_for('static', filename='trending.js', v='20261120b') }}" defer></script>
+  <script src="{{ url_for('static', filename='sharing.js', v='20261120b') }}" defer></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261120b') }}">
+  <script src="{{ url_for('static', filename='script.js', v='20261120b') }}" defer></script>
 </head>
 <body>
   <header>
@@ -21,6 +24,7 @@
     </nav>
 
     <div id="auth-panel"></div>
+    <button id="theme-toggle" type="button" aria-label="Тёмная тема" aria-pressed="false" title="Включить тёмную тему">☾</button>
   </header>
 
   <main id="content"></main>

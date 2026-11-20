@@ -1245,17 +1245,14 @@ def admin_events():
     })
 
 
-@app.get("/api/admin/events/<int:event_id>/qr")
-def admin_event_qr(event_id):
-    user, error = admin_required()
-    if error:
-        return error
+@app.get("/api/events/<int:event_id>/qr")
+def event_qr(event_id):
+    # QR-коды публичны только для опубликованных мероприятий.
+    event = Event.query.filter_by(id=event_id, status="approved").first()
+    if not event:
+        return jsonify(error="QR-код доступен только для опубликованных мероприятий"), 404
 
-    event = db.get_or_404(Event, event_id)
-    if event.status != "approved":
-        return jsonify(error="QR-код доступен только для опубликованных мероприятий"), 409
-
-    # PUBLIC_BASE_URL can be set when the app is behind a reverse proxy.
+    # PUBLIC_BASE_URL задаётся для корректной ссылки за reverse proxy.
     base_url = os.environ.get("PUBLIC_BASE_URL", request.url_root.rstrip("/")).rstrip("/")
     event_url = f"{base_url}/#event/{event.id}"
 
@@ -1276,8 +1273,9 @@ def admin_event_qr(event_id):
     return send_file(
         buffer,
         mimetype="image/png",
-        as_attachment=True,
-        download_name=f"letomeet-event-{event.id}-qr.png"
+        as_attachment=request.args.get("download") == "1",
+        download_name=f"letomeet-event-{event.id}-qr.png",
+        max_age=3600
     )
 
 @app.post("/api/admin/events/<int:event_id>/approve")
