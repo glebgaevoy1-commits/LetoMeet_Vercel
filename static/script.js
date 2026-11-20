@@ -785,29 +785,7 @@ async function accountPage() {
 
       <h1>Личный кабинет</h1>
 
-      <section class="form-section">
-        <h2>Профиль</h2>
-
-        <div class="account-info">
-          <p>
-            <strong>Имя</strong><br>
-            ${escapeHtml(currentUser.username)}
-          </p>
-
-          <p>
-            <strong>Почта</strong><br>
-            ${escapeHtml(currentUser.email)}
-          </p>
-
-          <p>
-            <strong>Роль</strong><br>
-            ${currentUser.role === 'admin'
-              ? 'Администратор'
-              : 'Ученик'}
-          </p>
-        </div>
-      </section>
-
+      ${profileMarkup()}
       <section class="form-section">
         <h2>Мои мероприятия</h2>
 
@@ -828,6 +806,7 @@ async function accountPage() {
   `;
 
   try {
+    bindProfile();
     const [myEvents, registrations] = await Promise.all([
       getMyEvents(),
       getMyRegistrations()
@@ -905,9 +884,8 @@ async function accountPage() {
             >
               Открыть
             </a>
-            ${event.status === 'rejected'
-              ? `<a class="secondary" href="#edit/${event.id}">Исправить и отправить повторно</a>`
-              : ''}
+            <a class="secondary" href="#edit/${event.id}">Редактировать</a>
+            <button class="secondary" type="button" onclick="deleteOwnedEvent(${event.id})">Удалить</button>
           </div>
 
         </article>
@@ -1350,6 +1328,7 @@ async function eventPage(event, preview = false) {
   }
 
       <h1>${escapeHtml(event.title)}</h1>
+      ${!preview && currentUser?.id === event.creator_id ? `<div class="owner-event-actions"><a class="secondary" href="#edit/${event.id}">Редактировать</a><button class="secondary" type="button" onclick="deleteOwnedEvent(${event.id})">Удалить событие</button></div>` : ''}
 
       <div class="meta">
         <span>${dateLabel(event.date)} · ${event.time}–${event.end}</span>
@@ -1537,7 +1516,7 @@ function createPage(editEvent = null) {
     <section class="event-form">
       <a class="back" href="#home">← На главную</a>
       <h1>${editEvent ? "Редактировать мероприятие" : "Добавить своё событие"}</h1>
-      ${editEvent ? `<section class="notice"><strong>Исправьте заявку и отправьте её на повторную модерацию.</strong><p>${escapeHtml(editEvent.moderation_comment || 'Администратор отклонил заявку без комментария.')}</p><a href="#event/${editEvent.id}">Вернуться к событию</a></section>` : ''}
+      ${editEvent ? `<section class="notice"><strong>Изменения должны пройти модерацию.</strong><p>После сохранения событие будет скрыто из каталога и карты до одобрения. Записи участников и комментарии сохранятся.</p><p>${escapeHtml(editEvent.moderation_comment || '')}</p><a href="#event/${editEvent.id}">Вернуться к событию</a></section>` : ''}
 
       <form id="event-form">
         <div class="form-grid">
@@ -2018,8 +1997,8 @@ async function render() {
       const response = await fetch(`/api/events/${id}`, {cache: 'no-store'});
       const event = response.ok ? await response.json() : null;
       if (location.hash !== hash) return;
-      if (!event || event.status !== 'rejected' || event.creator_id !== currentUser?.id) {
-        content.innerHTML = '<section class="empty"><h1>Редактирование недоступно</h1><p>Редактировать можно только собственные отклонённые мероприятия.</p><a href="#account">Вернуться в личный кабинет</a></section>';
+      if (!event || event.creator_id !== currentUser?.id) {
+        content.innerHTML = '<section class="empty"><h1>Редактирование недоступно</h1><p>Редактировать можно только собственные мероприятия.</p><a href="#account">Вернуться в личный кабинет</a></section>';
       } else {
         createPage(event);
       }
@@ -2127,7 +2106,7 @@ async function commentsPanel(eventId) {
     const response = await fetch(`/api/events/${eventId}/comments`);
     if (!response.ok) throw new Error('Не удалось загрузить комментарии');
     const rows = await response.json();
-    panel.querySelector('.comment-list').innerHTML = rows.length ? rows.map(c => `<article class="comment"><strong>${escapeHtml(c.author)}</strong><p>${escapeHtml(c.body)}</p><small>${escapeHtml(new Date(c.created_at).toLocaleString('ru'))}</small>${c.can_delete ? `<button class="plain" data-delete="${c.id}">Удалить</button>` : ''}</article>`).join('') : '<p class="muted">Пока нет комментариев.</p>';
+    panel.querySelector('.comment-list').innerHTML = rows.length ? rows.map(c => `<article class="comment"><div class="comment-author">${avatarMarkup({username:c.author,avatar_url:c.avatar_url},"comment-avatar")}<strong>${escapeHtml(c.author)}</strong></div><p>${escapeHtml(c.body)}</p><small>${escapeHtml(new Date(c.created_at).toLocaleString('ru'))}</small>${c.can_delete ? `<button class="plain" data-delete="${c.id}">Удалить</button>` : ''}</article>`).join('') : '<p class="muted">Пока нет комментариев.</p>';
   }
   panel.onclick = async e => {
     const id = e.target.dataset.delete;

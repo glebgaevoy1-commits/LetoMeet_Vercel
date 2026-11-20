@@ -841,3 +841,13 @@ button:disabled {cursor:wait;opacity:.65}
 
 .share-actions>*{gap:8px}.share-logo{width:22px;height:22px;flex:0 0 22px}.share-logo-telegram{color:#1686b0}.share-logo-whatsapp{color:#188542}.share-logo-discord{color:#5865f2}.share-logo-instagram{color:#c13584}
 [data-theme="dark"] .share-logo-telegram{color:#54c4ee}[data-theme="dark"] .share-logo-whatsapp{color:#59d98b}[data-theme="dark"] .share-logo-discord{color:#a1a9ff}[data-theme="dark"] .share-logo-instagram{color:#f58ac7}
+
+/* Simple personal profile and owner event controls. */
+.profile-card{border:1px solid var(--outline);border-radius:16px;overflow:hidden;margin:24px 0;background:var(--white)}
+.profile-banner{height:190px;background:linear-gradient(120deg,var(--upperbox),var(--soft))}.profile-banner img{width:100%;height:100%;object-fit:cover}
+.profile-identity{display:flex;align-items:flex-end;gap:16px;padding:0 24px;margin-top:-40px;position:relative}.profile-identity h2{margin:0 0 10px;overflow-wrap:anywhere}
+.profile-avatar{width:100px;height:100px;flex:0 0 100px;border:5px solid var(--white);border-radius:50%;object-fit:cover;background:var(--upperbox)}.avatar-initials{display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:24px}
+.profile-editor{padding:24px}.profile-editor>summary{cursor:pointer;min-height:44px;font-weight:600}.profile-upload{margin:16px 0;padding:16px;border:1px solid var(--outline);border-radius:8px}.profile-upload input{max-width:100%;min-width:0}.profile-avatar-preview{width:100px;height:100px;border-radius:50%;object-fit:cover}.profile-banner-preview{width:100%;height:140px;object-fit:cover;border-radius:8px}.profile-upload button{margin-top:12px}
+.comment-author{display:flex;align-items:center;gap:10px}.comment-avatar{width:36px;height:36px;flex:0 0 36px;border-radius:50%;object-fit:cover;background:var(--upperbox);font-size:13px}
+.owner-event-actions{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px}
+@media(max-width:520px){.profile-banner{height:140px}.profile-identity{padding:0 14px;gap:12px}.profile-avatar{width:80px;height:80px;flex-basis:80px}.profile-editor{padding:16px}.profile-identity h2{font-size:20px}.profile-upload{padding:12px}.account-event-actions{flex-wrap:wrap}}

@@ -88,12 +88,21 @@ class User(db.Model):
     )
 
     def to_dict(self):
+        profile = db.session.get(Profile, self.id)
         return {
             "id": self.id,
             "username": self.username,
             "email": self.email,
+            "avatar_url": (profile.avatar_url if profile else None),
+            "banner_url": (profile.banner_url if profile else None),
             "role": self.role
         }
+
+
+class Profile(db.Model):
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), primary_key=True)
+    avatar_url = db.Column(db.String(500), nullable=True)
+    banner_url = db.Column(db.String(500), nullable=True)
 
 
 class AuthCode(db.Model):
@@ -595,6 +604,7 @@ def event_comments(event_id):
         db.session.commit()
     rows = Comment.query.filter_by(event_id=event_id).order_by(Comment.id.desc()).limit(100).all()
     return jsonify([dict(id=c.id, body=c.body, author=db.session.get(User, c.user_id).username,
+                         avatar_url=(db.session.get(Profile, c.user_id).avatar_url if db.session.get(Profile, c.user_id) else None),
                          created_at=c.created_at.isoformat()+"Z", can_delete=bool(user and (user.id == c.user_id or user.role == "admin"))) for c in rows])
 
 @app.delete("/api/comments/<int:comment_id>")
@@ -890,26 +900,70 @@ def api_create_event():
 
 
 @app.put("/api/events/<int:event_id>")
-def api_edit_rejected_event(event_id):
+def api_edit_event(event_id):
     user = current_user()
     if not user:
         return jsonify(error="Необходимо войти в аккаунт"), 401
     event = db.get_or_404(Event, event_id)
     if event.creator_id != user.id:
         return jsonify(error="Вы можете редактировать только свои мероприятия"), 403
-    if event.status != "rejected":
-        return jsonify(error="Редактировать можно только отклонённые мероприятия"), 409
     values, error = event_form(request.get_json(silent=True) or {}, user.id, event)
     if error:
         return error
     values.update(status="pending", moderation_comment=None)
-    changed = Event.query.filter_by(id=event_id, creator_id=user.id, status="rejected").update(values, synchronize_session=False)
+    changed = Event.query.filter_by(id=event_id, creator_id=user.id, status=event.status).update(values, synchronize_session=False)
     if not changed:
         db.session.rollback()
         return jsonify(error="Статус уже изменился. Обновите страницу."), 409
     db.session.commit()
     db.session.expire_all()
     return jsonify(success=True, message="Исправленное мероприятие отправлено на повторную модерацию", event=db.session.get(Event, event_id).to_dict())
+
+
+@app.delete("/api/events/<int:event_id>")
+def delete_event(event_id):
+    user = current_user()
+    if not user:
+        return jsonify(error="Необходимо войти"), 401
+    event = db.get_or_404(Event, event_id)
+    if event.creator_id != user.id and user.role != "admin":
+        return jsonify(error="Вы можете удалять только свои мероприятия"), 403
+    Comment.query.filter_by(event_id=event_id).delete(synchronize_session=False)
+    Registration.query.filter_by(event_id=event_id).delete(synchronize_session=False)
+    db.session.delete(event)
+    db.session.commit()
+    return jsonify(success=True)
+
+
+@app.put("/api/me/profile")
+def update_profile():
+    user = current_user()
+    if not user:
+        return jsonify(error="Необходимо войти"), 401
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="Некорректные данные профиля"), 400
+    name = data.get("username")
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+        return jsonify(error="Имя: от 1 до 80 символов"), 400
+    profile = db.session.get(Profile, user.id)
+    images = {}
+    for field in ("avatar_url", "banner_url"):
+        value = data.get(field, getattr(profile, field, None)) or None
+        if value:
+            match = re.fullmatch(r"/media/([a-f0-9]{32})\.jpg", value) if isinstance(value, str) else None
+            photo = db.session.get(EventImage, match.group(1)) if match else None
+            if not photo or photo.user_id != user.id:
+                return jsonify(error="Сначала загрузите своё изображение"), 400
+        images[field] = value
+    if not profile:
+        profile = Profile(user_id=user.id)
+        db.session.add(profile)
+    user.username = name.strip()
+    for field, value in images.items():
+        setattr(profile, field, value)
+    db.session.commit()
+    return jsonify(user=user.to_dict())
 
 
 @app.get("/api/me/events")

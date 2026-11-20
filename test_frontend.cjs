@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = name => fs.readFileSync(path.join(__dirname, 'static', name), 'utf8');
-for (const name of ['script.js','theme.js','trending.js','sharing.js']) new vm.Script(source(name));
+for (const name of ['script.js','theme.js','trending.js','sharing.js','profile.js']) new vm.Script(source(name));
 const context = vm.createContext({URL, location:{origin:'https://school.example'},
   escapeHtml:s=>String(s).replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;')});
 vm.runInContext(source('trending.js') + source('sharing.js'), context);

@@ -144,7 +144,7 @@ class Features(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(m.db.session.get(m.Event, eid).title, "Test")
 
-    def test_non_rejected_event_cannot_be_edited(self):
+    def test_pending_event_edit_still_validates_fields(self):
         creator_id = self.login("Creator")
         eid = self.event("pending")
         event = m.db.session.get(m.Event, eid)
@@ -153,7 +153,7 @@ class Features(unittest.TestCase):
         response = self.client.put(f"/api/events/{eid}", json={
             "title": "Hack"
         })
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 400)
 
     def test_map_and_origin(self):
         import json
@@ -250,6 +250,69 @@ class Features(unittest.TestCase):
             with self.subTest(changes=changes):
                 payload = {**self.payload(), **changes}
                 self.assertEqual(self.client.post('/api/events', json=payload).status_code, 400)
+
+
+    def test_published_edit_requires_approval_and_keeps_related_records(self):
+        uid = self.login('Owner')
+        eid = self.event()
+        event = m.db.session.get(m.Event, eid); event.creator_id = uid
+        m.db.session.add(m.Registration(user_id=uid, event_id=eid))
+        m.db.session.add(m.Comment(user_id=uid, event_id=eid, body='Keep this'))
+        m.db.session.commit()
+        self.assertEqual(self.client.put(f'/api/events/{eid}',json=self.payload()).status_code,200)
+        self.assertEqual(m.db.session.get(m.Event,eid).status,'pending')
+        with self.client.session_transaction() as session: session.clear()
+        self.assertEqual(self.client.get(f'/api/events/{eid}').status_code,404)
+        self.assertEqual(self.client.get(f'/api/events/{eid}/qr').status_code,404)
+        self.assertEqual(self.client.get('/api/events').json,[])
+        self.login('Moderator','admin')
+        self.assertEqual(self.client.post(f'/api/admin/events/{eid}/approve').status_code,200)
+        self.assertEqual(self.client.get(f'/api/events/{eid}').json['title'],'Corrected')
+        self.assertEqual(m.Registration.query.filter_by(event_id=eid).count(),1)
+        self.assertEqual(m.Comment.query.filter_by(event_id=eid).count(),1)
+
+    def test_delete_event_permissions_and_cleanup(self):
+        uid=self.login('Owner');eid=self.event()
+        event=m.db.session.get(m.Event,eid);event.creator_id=uid
+        m.db.session.add(m.Registration(user_id=uid,event_id=eid))
+        m.db.session.add(m.Comment(user_id=uid,event_id=eid,body='Comment'))
+        m.db.session.commit()
+        with self.client.session_transaction() as session:session.clear()
+        self.assertEqual(self.client.delete(f'/api/events/{eid}').status_code,401)
+        self.login('Other')
+        self.assertEqual(self.client.delete(f'/api/events/{eid}').status_code,403)
+        self.assertEqual(self.client.put(f'/api/events/{eid}',json=self.payload()).status_code,403)
+        with self.client.session_transaction() as session:session['user_id']=uid
+        self.assertEqual(self.client.delete(f'/api/events/{eid}').status_code,200)
+        self.assertIsNone(m.db.session.get(m.Event,eid))
+        self.assertEqual(m.Registration.query.filter_by(event_id=eid).count(),0)
+        self.assertEqual(m.Comment.query.filter_by(event_id=eid).count(),0)
+        self.assertEqual(self.client.get(f'/api/events/{eid}').status_code,404)
+
+    def test_profile_update_images_and_remove(self):
+        uid=self.login('Owner');image_id='b'*32
+        m.db.session.add(m.EventImage(id=image_id,user_id=uid,data=b'photo'));m.db.session.commit()
+        url=f'/media/{image_id}.jpg'
+        response=self.client.put('/api/me/profile',json=dict(username='New name',avatar_url=url,banner_url=url,role='admin',email='other@example.org'))
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json['user']['role'],'user')
+        self.assertEqual(response.json['user']['avatar_url'],url)
+        self.assertEqual(response.json['user']['email'],'Owner@letovo.ru')
+        eid=self.event();m.db.session.add(m.Comment(user_id=uid,event_id=eid,body='Hello'));m.db.session.commit()
+        comment=self.client.get(f'/api/events/{eid}/comments').json[0]
+        self.assertEqual(comment['avatar_url'],url);self.assertEqual(comment['author'],'New name')
+        response=self.client.put('/api/me/profile',json=dict(username='New name',avatar_url=None,banner_url=None))
+        self.assertIsNone(response.json['user']['avatar_url']);self.assertIsNone(response.json['user']['banner_url'])
+
+    def test_profile_rejects_foreign_images_and_invalid_name(self):
+        uid=self.login('First');image_id='c'*32
+        m.db.session.add(m.EventImage(id=image_id,user_id=uid,data=b'photo'));m.db.session.commit()
+        self.login('Second')
+        for changes in [dict(username=''),dict(username='x'*81),dict(username='Ok',avatar_url=f'/media/{image_id}.jpg'),dict(username='Ok',banner_url='https://example.org/a.jpg')]:
+            self.assertEqual(self.client.put('/api/me/profile',json=changes).status_code,400)
+        self.assertEqual(self.client.put('/api/me/profile',json=[]).status_code,400)
+        with self.client.session_transaction() as session:session.clear()
+        self.assertEqual(self.client.put('/api/me/profile',json={'username':'New'}).status_code,401)
 
 
 def tearDownModule():
