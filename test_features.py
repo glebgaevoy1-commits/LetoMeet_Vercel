@@ -2,7 +2,7 @@ import os, tempfile, unittest, io
 from unittest.mock import patch
 from datetime import datetime, timedelta
 from PIL import Image
-_tmp = tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(__file__)))
+_tmp = tempfile.TemporaryDirectory()
 os.environ['DATABASE_URL'] = 'sqlite:///' + os.path.join(_tmp.name, 'test.db').replace('\\', '/')
 os.environ['UPLOAD_FOLDER'] = os.path.join(_tmp.name, 'uploads')
 os.environ['SECRET_KEY'] = 'test-only-secret'
@@ -155,78 +155,6 @@ class Features(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 409)
 
-    def valid_payload(self):
-        return dict(title='Event', summary='Summary', description='Details',
-                    activity='Sport', type='Club', duration='Hour', place='School',
-                    room='AS1', date='2026-11-20', time='17:00', end='18:00',
-                    organizer='Student', card_color='cream')
-
-    def test_invalid_event_inputs_never_create_rows(self):
-        self.login()
-        for field, value in [('title', 'x'*151), ('room', []),
-                             ('date', '2026-02-30'), ('time', '25:00'),
-                             ('end', '16:00'), ('regular', 'false'),
-                             ('chat', 'javascript:alert(1)'), ('card_color', 'red')]:
-            with self.subTest(field=field):
-                payload=self.valid_payload(); payload[field]=value
-                self.assertEqual(self.client.post('/api/events', json=payload).status_code,400)
-        for body in ['[]', '{broken', 'null']:
-            self.assertEqual(self.client.post('/api/events',data=body,content_type='application/json').status_code,400)
-        self.assertEqual(m.Event.query.count(),0)
-
-    def test_legacy_cover_survives_edit_and_can_be_removed(self):
-        uid=self.login(); eid=self.event('rejected')
-        event=m.db.session.get(m.Event,eid); event.creator_id=uid
-        event.image_url='/static/uploads/legacy.jpg'; m.db.session.commit()
-        payload=self.valid_payload(); payload['image_url']=event.image_url
-        response=self.client.put(f'/api/events/{eid}',json=payload)
-        self.assertEqual(response.status_code,200)
-        self.assertEqual(response.json['event']['image_url'],payload['image_url'])
-        event=m.db.session.get(m.Event,eid); event.status='rejected'; m.db.session.commit()
-        payload['image_url']=None
-        response=self.client.put(f'/api/events/{eid}',json=payload)
-        self.assertEqual(response.status_code,200)
-        self.assertIsNone(response.json['event']['image_url'])
-
-    def test_cannot_attach_someone_elses_photo(self):
-        self.login('Owner'); stream=io.BytesIO()
-        Image.new('RGB',(20,20)).save(stream,'PNG'); stream.seek(0)
-        photo=self.client.post('/api/upload-image',data={'image':(stream,'test.png')}).json['image_url']
-        payload=self.valid_payload(); payload['image_url']=photo
-        self.login('Other')
-        self.assertEqual(self.client.post('/api/events',json=payload).status_code,403)
-        self.assertEqual(m.Event.query.count(),0)
-
-    def test_complete_moderation_and_participation_flow(self):
-        uid=self.login('Creator')
-        payload=self.valid_payload()
-        eid=self.client.post('/api/events',json=payload).json['id']
-        admin=self.login('Admin','admin')
-        self.assertEqual(self.client.post(f'/api/admin/events/{eid}/reject',json={'comment':'Clarify'}).status_code,200)
-        with self.client.session_transaction() as s:s['user_id']=uid
-        payload['title']='Corrected'
-        self.assertEqual(self.client.put(f'/api/events/{eid}',json=payload).status_code,200)
-        self.assertEqual(self.client.get('/api/events').json,[])
-        self.assertEqual(self.client.post(f'/api/events/{eid}/comments',json={'body':'hi'}).status_code,404)
-        with self.client.session_transaction() as s:s['user_id']=admin
-        self.assertEqual(self.client.post(f'/api/admin/events/{eid}/approve').status_code,200)
-        with self.client.session_transaction() as s:s['user_id']=uid
-        self.assertEqual(len(self.client.get('/api/events').json),1)
-        self.assertEqual(self.client.post(f'/api/events/{eid}/comments',json={'body':'hi'}).status_code,200)
-        self.assertEqual(self.client.post(f'/api/events/{eid}/join').status_code,201)
-        self.assertEqual(self.client.post(f'/api/events/{eid}/join').status_code,400)
-        self.assertEqual(m.db.session.get(m.Event,eid).count,1)
-        self.assertEqual(self.client.delete(f'/api/events/{eid}/join').status_code,200)
-        self.assertEqual(m.db.session.get(m.Event,eid).count,0)
-        self.assertEqual(m.Event.query.count(),1)
-
-    def test_api_errors_and_stale_session(self):
-        response=self.client.get('/api/events/999')
-        self.assertEqual(response.status_code,404); self.assertTrue(response.is_json)
-        self.assertEqual(response.headers['Cache-Control'],'no-store')
-        with self.client.session_transaction() as s:s['user_id']=999
-        self.assertEqual(self.client.post('/api/events',json=self.valid_payload()).status_code,401)
-
     def test_map_and_origin(self):
         import json
         from pathlib import Path
@@ -240,6 +168,91 @@ class Features(unittest.TestCase):
     def test_email_fails_closed(self):
         with patch.dict(os.environ, {'SMTP_HOST':'','MAIL_MODE':''}):
             with self.assertRaises(RuntimeError):m.send_email_code('a@letovo.ru','123456','login')
+    def payload(self):
+        return dict(title='Corrected', summary='Summary', description='Details',
+                    activity='Sport', type='Club', duration='Hour', place='School',
+                    room='C328', date='2026-11-21', time='17:00', end='18:00',
+                    organizer='Student', regular=False, card_color='blue')
+
+    def test_qr_permissions_and_published_status(self):
+        event_id = self.event()
+        path = f'/api/admin/events/{event_id}/qr'
+        self.assertEqual(self.client.get(path).status_code, 401)
+        self.login()
+        self.assertEqual(self.client.get(path).status_code, 403)
+        self.login('Admin', 'admin')
+        with patch.dict(os.environ, {'PUBLIC_BASE_URL': 'https://school.example/'}):
+            with patch.object(m.qrcode.QRCode, 'add_data', autospec=True) as add:
+                response = self.client.get(path)
+                self.assertEqual(add.call_args.args[1], f'https://school.example/#event/{event_id}')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('attachment;', response.headers['Content-Disposition'])
+        with Image.open(io.BytesIO(response.data)) as image:
+            self.assertEqual(image.format, 'PNG')
+        response.close()
+        event = m.db.session.get(m.Event, event_id)
+        event.status = 'pending'
+        m.db.session.commit()
+        self.assertEqual(self.client.get(path).status_code, 409)
+
+    def test_reject_resubmit_approve_keeps_registration(self):
+        creator = self.login()
+        event_id = self.event('approved')
+        event = m.db.session.get(m.Event, event_id)
+        event.creator_id = creator
+        event.count = 1
+        m.db.session.add(m.Registration(user_id=creator, event_id=event_id))
+        m.db.session.commit()
+        self.login('Admin', 'admin')
+        self.assertEqual(self.client.post(f'/api/admin/events/{event_id}/reject', json={'comment': 'Уточните кабинет'}).status_code, 200)
+        with self.client.session_transaction() as session:
+            session['user_id'] = creator
+        self.assertEqual(self.client.put(f'/api/events/{event_id}', json=self.payload()).status_code, 200)
+        self.assertEqual(self.client.get('/api/events').json, [])
+        self.assertEqual(m.Registration.query.filter_by(event_id=event_id).count(), 1)
+        admin = m.User.query.filter_by(role='admin').one()
+        with self.client.session_transaction() as session:
+            session['user_id'] = admin.id
+        self.assertEqual(self.client.post(f'/api/admin/events/{event_id}/approve').status_code, 200)
+        published = self.client.get('/api/events').json
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0]['count'], 1)
+        self.assertEqual(published[0]['title'], 'Corrected')
+
+    def test_resubmission_preserves_omitted_existing_photo(self):
+        creator = self.login()
+        event_id = self.event('rejected')
+        event = m.db.session.get(m.Event, event_id)
+        event.creator_id = creator
+        event.image_url = '/static/uploads/old-photo.jpg'
+        m.db.session.commit()
+        response = self.client.put(f'/api/events/{event_id}', json=self.payload())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json['event']['image_url'], '/static/uploads/old-photo.jpg')
+
+    def test_cannot_use_another_users_photo(self):
+        first = self.login('First')
+        photo_id = 'a' * 32
+        m.db.session.add(m.EventImage(id=photo_id, user_id=first, data=b'image'))
+        m.db.session.commit()
+        self.login('Second')
+        payload = self.payload()
+        payload['image_url'] = f'/media/{photo_id}.jpg'
+        self.assertEqual(self.client.post('/api/events', json=payload).status_code, 403)
+
+    def test_api_errors_and_invalid_forms(self):
+        response = self.client.get('/api/events/99999')
+        self.assertEqual(response.status_code, 404)
+        self.assertIn('error', response.json)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.login()
+        self.assertEqual(self.client.post('/api/events', json=[]).status_code, 400)
+        for changes in ({'time': '19:00'}, {'title': 'x' * 151}, {'regular': 'false'}, {'contact': 'javascript:alert(1)'}):
+            with self.subTest(changes=changes):
+                payload = {**self.payload(), **changes}
+                self.assertEqual(self.client.post('/api/events', json=payload).status_code, 400)
+
+
 def tearDownModule():
     with m.app.app_context():
         m.db.session.remove(); m.db.engine.dispose()

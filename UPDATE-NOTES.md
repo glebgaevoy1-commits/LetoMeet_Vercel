@@ -1,19 +1,51 @@
-# Map zoom and event-form update
+# Объединённая версия LETOMEET — 20 ноября 2026
 
-## Deploy to your existing Vercel project
-1. Replace the app files in the GitHub repository connected to the existing Vercel project with this package's LETOMEET-main contents. Keep main.py at the configured project root.
-2. Run migrations/001_event_features.sql in the Neon SQL Editor, selecting the same branch/database as Vercel DATABASE_URL. It only adds missing fields and the new event_image table. Existing approved statuses are preserved. If status did not previously exist, old events start pending and need admin approval.
-3. Deploy the new commit to Production. Keep your existing DATABASE_URL, SECRET_KEY, SMTP settings and ADMIN_EMAIL. No new service credentials are required.
-4. Check /#map: +/- buttons, keyboard-accessible zoom slider (50-300%), fit-to-width reset, and horizontal/vertical scrolling. Map pins scale with the floor plan. Check /#create: seven colored swatches, selected-color sample, photo help, preview and removal.
+Объединены LETOMEET(1).zip и LETOMEET-main(2).zip.
 
-## Photo changes
-New photos are saved in Neon/PostgreSQL (SQLite when running locally), not on Vercel's read-only filesystem. The old error handler treated disk write errors as invalid images; storage failures now have a separate message. Cyrillic filenames are supported. JPEG/PNG/WebP inputs are decoded, oriented from EXIF, reduced to at most 2400 pixels on the longest side, and re-encoded as JPEG. Transparent areas become white; metadata/animation are removed.
+## Возможности
 
-Input limits: 4 MiB per file; 20 million pixels. Any aspect ratio is allowed. Recommended cover: 1600x900 (16:9). HEIC, SVG and other formats are unsupported; convert to JPG/PNG first. The smaller file cap leaves space for multipart overhead on Vercel. The UI checks size/dimensions, previews the chosen file, and offers 'Убрать фото' before submitting. No photo is uploaded until the event form is submitted. Creating without a photo is supported.
+- «К событиям» на главной открывает карту. «Список событий» открывает каталог с фильтрами.
+- Карта всех четырёх этажей, масштаб 50–300%, кнопки +/−, сброс по ширине, прокрутка и запоминание выбранного этажа.
+- Соседние точки объединяются: кнопка с числом открывает список мероприятий у этой точки. Список рядом с планом показывает события этажа и события без найденного кабинета.
+- Мини-карта кабинета в каталоге и карточке события; в карточке также можно развернуть весь план этажа. Ссылка «Открыть карту школы» выбирает этаж и выделяет нужное событие. Для доступной автору/администратору неопубликованной заявки также можно открыть её точку.
+- Обозначения c328, С328, 328, Каб. 328 сопоставляются с одним кабинетом.
+- Создание события с фото, цветом, эмодзи и подписью; подсказки кабинетов; предпросмотр и удаление выбранной фотографии; защита от повторной отправки формы.
+- Личный кабинет со своими мероприятиями и записями. Автор может исправить отклонённую заявку и отправить повторно. Сохраняются ID события и записи участников, очищается комментарий отклонения, статус становится pending. Публикация происходит после одобрения.
+- Админка: поиск, фильтрация по статусу, сортировка, просмотр обложек, одобрение, отклонение с причиной, снятие с публикации.
+- Скачивание QR-кода опубликованного события из админки. QR ведёт на /#event/ID. Для корректного публичного адреса за прокси можно задать PUBLIC_BASE_URL.
+- Вход/регистрация с почтовым кодом, запись и отмена записи, комментарии и их удаление с учётом прав.
+- Изображения хранятся в базе; старые файловые изображения также поддерживаются. Сохранены ограничения загрузки и проверка прав владельца изображения.
+- Проверка полей и ссылок, ограничения запросов кодов, одноразовое использование кодов, JSON-ошибки API и Cache-Control: no-store.
 
-Photos use the existing /media/<uuid>.jpg URL format and are public to anyone with their URL. Previous disk-only photos aren't automatically moved into Neon; re-upload any missing covers. Images increase database storage and transfer usage. Uploads abandoned after a failed event submission are not automatically garbage collected; high-volume use should add quotas/cleanup or migrate to object storage.
+## Локальные данные
 
-The date/time/place/room section is unchanged in this update. Email verification settings and database event content are not changed. This package is a local deliverable; no GitHub or Vercel changes were made on your behalf.
+В двух архивах различались локальные базы. В instance/school.db сохранены пользователи, события и фото обеих версий: 2 пользователя, 2 события и 2 фотографии в таблице event_image. Данные первого архива сохранили ID; пользователю и событию второго архива назначены новые ID (1 → 2), связи и изображения перенесены вместе с ними. Файлы static/uploads и доступные резервные базы сохранены.
 
-## Validation
-11 Python integration tests passed, including uploads with local writes blocked, Cyrillic filename handling, retrieval with a new client/session, resizing/transparency, pixel/file limits, and separate storage-error handling. Python compilation and JavaScript syntax checks passed. Browser checks verified map zoom 100->200->100% and color selection updating the live preview. Browser file-picker selection/removal could not be completed because file-upload permission was declined. No live Neon write, live SMTP send, or production deployment was performed.
+Эта база предназначена для запуска распакованной копии. При обновлении своей действующей установки сохраните её текущую instance/school.db и настройки окружения. Не заменяйте рабочую базу примером из архива. Если задан DATABASE_URL, приложение использует указанную внешнюю базу.
+
+## Запуск
+
+В папке с main.py:
+
+```powershell
+python -m pip install -r requirements.txt
+$env:SECRET_KEY = (python -c "import secrets; print(secrets.token_hex(32))")
+$env:MAIL_MODE = "console"
+python main.py
+```
+
+Откройте http://127.0.0.1:5000. В локальном режиме MAIL_MODE=console коды входа выводятся в терминал. Для настоящей отправки писем задайте SMTP-переменные из .env.example. Сам файл .env.example автоматически не загружается.
+
+Для назначения администратора задайте свой ADMIN_EMAIL перед запуском. Для Vercel обязательны DATABASE_URL и постоянный SECRET_KEY; сохраняйте существующие настройки SMTP. Для QR можно указать PUBLIC_BASE_URL=https://адрес-вашего-сайта без конечного слеша.
+
+Если зависимости уже установлены, всё равно обновите их через requirements.txt: для QR добавлен qrcode[pil]==8.2.
+
+## Проверки
+
+- Все 19 интеграционных тестов проходят на отдельной временной SQLite-базе: `python -m unittest -v test_features`.
+- Проверены синтаксис Python и JavaScript.
+- В среде DOM с имитацией API проверены переход с главной, обозначения кабинетов, группировка и выбор точек, список без координат, этажи, масштаб, выделение события, оба вида мини-карт, поиск/статусы/сортировка/QR-ссылки в админке, заполнение формы и повторная отправка.
+- Визуальная проверка в полноценном браузере недоступна в этой среде. DOM-проверка не оценивает реальную вёрстку и загрузку изображений браузером.
+- Рабочие SMTP, PostgreSQL/Neon и Vercel не изменялись и здесь не проверялись. Архив подготовлен для самостоятельного запуска или загрузки в ваш репозиторий.
+
+Схема данных совпадает в обеих версиях, дополнительных колонок при этом объединении не добавлено. Для перехода с более старой схемы остаётся migrations/001_event_features.sql.

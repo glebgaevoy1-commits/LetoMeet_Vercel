@@ -602,20 +602,81 @@ dialog::backdrop { background: #29282066; }
 .comment {padding:1rem 0;border-bottom:1px solid #ddd}
 .comment p {white-space:pre-wrap;overflow-wrap:anywhere}
 .comment button {margin-left:1rem}
-.map-layout {display:grid;grid-template-columns:minmax(0,3fr) minmax(200px,1fr);gap:24px}
-.map-scroll {overflow:auto;border:1px solid #ddd;border-radius:16px;background:#fff}
-.school-map {position:relative;min-width:800px}
-.school-map img {display:block;width:100%;height:auto}
-.map-pins {position:absolute;inset:0;pointer-events:none}
-.map-pin {position:absolute;transform:translate(-50%,-50%);border-radius:50%;background:#dfc878;color:#222;border:2px solid #222;min-width:28px;height:28px;display:grid;place-items:center;font-weight:bold;pointer-events:auto}
-@media(max-width:700px){.map-layout{grid-template-columns:1fr}}
+.map-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin: 16px 0;
+}
+.map-scroll {
+  max-height: 85vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--outline);
+  border-radius: 16px;
+  background: #fff;
+}
+.map-scroll:has(img[src$="/floor_0.png"]) { max-width: 47vh; }
+.school-map { position: relative; width: 100%; }
+.school-map img { display: block; width: 100%; height: auto; }
+.map-pins { position: absolute; inset: 0; pointer-events: none; }
+.map-pin {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: #79591c;
+  color: #fff;
+  box-shadow: 0 1px 4px #29282066;
+  font-size: 13px;
+  font-weight: 700;
+  pointer-events: auto;
+}
+.map-pin:empty::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.map-pin:hover, .map-pin:focus-visible {
+  z-index: 1;
+  border-color: #fff;
+  background: #513a0d;
+}
+.map-picker-events { display: grid; gap: 8px; }
+.map-picker-events a { padding: 8px 0; }
+.map-picker-events small { display: block; color: var(--dull); }
+.map-unplaced { margin-top: 12px; }
+.event-location { margin-top: 28px; }
+.event-location h2, .event-location p { margin-bottom: 8px; }
+.event-location .school-map {
+  max-width: 550px;
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+  background: #fff;
+}
+.event-location .school-map:has(img[src$="/floor_0.png"]) { max-width: 270px; }
+.event-location img { border-radius: inherit; }
+.event-location .map-pin { pointer-events: none; }
 
 /* Map and creation-form refinements. */
-.school-map {min-width:0;width:100%;flex-shrink:0}
-.map-scroll {max-height:70vh;overscroll-behavior:contain}
-.map-zoom-controls {display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0}
+.map-zoom-controls {display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.map-zoom-range, .map-zoom-buttons { display: flex; align-items: center; gap: 10px; }
 .map-zoom-controls input {width:140px;min-width:80px}
 .map-zoom-controls output {min-width:3.5em;font-variant-numeric:tabular-nums}
+@media (max-width: 440px) {
+  #navigation { flex-wrap: wrap; gap: 6px 10px; }
+  #navigation a { white-space: nowrap; }
+  .map-zoom-range { width: 100%; }
+  .map-zoom-controls input { flex: 1; }
+}
 .color-picker {border:0;padding:0;margin:0;min-width:0}
 .color-swatches {display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
 .color-option {display:flex;flex-direction:column;align-items:center;position:relative;gap:6px;cursor:pointer;font-size:12px}
@@ -640,3 +701,26 @@ button:disabled {cursor:wait;opacity:.65}
 .notice button {margin:10px}
 .event-location-card .secondary {display:inline-block;margin-top:8px}
 @media(max-width:700px){.catalog-map{max-width:100%}.event-location-card{padding:12px}}
+
+/* Admin event search and moderation tools */
+.admin-event-tools {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) minmax(160px, 1fr) minmax(180px, 1fr);
+  gap: 14px;
+  margin: 18px 0 10px;
+  align-items: end;
+}
+.admin-event-tools .field { min-width: 0; }
+.admin-event-main { flex: 1; min-width: 0; }
+.admin-event-actions { flex-wrap: wrap; justify-content: flex-end; }
+.admin-event-actions a { white-space: nowrap; }
+#admin-event-count { margin: 8px 0 14px; }
+@media (max-width: 700px) {
+  .admin-event-tools { grid-template-columns: 1fr; }
+  .admin-event-actions { justify-content: flex-start; }
+}
+
+.map-layout {display:grid;grid-template-columns:minmax(0,3fr) minmax(200px,1fr);gap:24px;align-items:start}
+.map-layout > .map-scroll {min-width:0}
+.map-layout > #map-events {min-width:0;overflow-wrap:anywhere}
+@media(max-width:700px){.map-layout{grid-template-columns:1fr}}

@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from werkzeug.exceptions import HTTPException
 from urllib.parse import urlsplit
 import io
+import qrcode
 from PIL import ImageOps
 
 app = Flask(__name__)
@@ -862,7 +863,7 @@ def event_form(data, user_id, existing=None):
                     raise ValueError()
             except ValueError:
                 return None, (jsonify(error="Контакты должны быть корректными HTTP(S) ссылками"), 400)
-    photo = data.get("image_url") or None
+    photo = data.get("image_url", existing.image_url if existing else None) or None
     if photo and not (existing and photo == existing.image_url):
         match = re.fullmatch(r"/media/([a-f0-9]{32})\.jpg", photo) if isinstance(photo, str) else None
         if not match:
@@ -1242,6 +1243,42 @@ def admin_events():
     return jsonify({
         "events": [event.to_dict() for event in events]
     })
+
+
+@app.get("/api/admin/events/<int:event_id>/qr")
+def admin_event_qr(event_id):
+    user, error = admin_required()
+    if error:
+        return error
+
+    event = db.get_or_404(Event, event_id)
+    if event.status != "approved":
+        return jsonify(error="QR-код доступен только для опубликованных мероприятий"), 409
+
+    # PUBLIC_BASE_URL can be set when the app is behind a reverse proxy.
+    base_url = os.environ.get("PUBLIC_BASE_URL", request.url_root.rstrip("/")).rstrip("/")
+    event_url = f"{base_url}/#event/{event.id}"
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=4
+    )
+    qr.add_data(event_url)
+    qr.make(fit=True)
+
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        mimetype="image/png",
+        as_attachment=True,
+        download_name=f"letomeet-event-{event.id}-qr.png"
+    )
 
 @app.post("/api/admin/events/<int:event_id>/approve")
 def approve_event(event_id):
